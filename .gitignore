@@ -5,6 +5,9 @@
 bin/
 dist/
 coverage.txt
+# Stray root-level binary from an ad-hoc `go build ./cmd/scanner-mikebom`
+# (the Taskfile always builds into bin/).
+/scanner-mikebom
 
 # Task fingerprint cache
 .task/

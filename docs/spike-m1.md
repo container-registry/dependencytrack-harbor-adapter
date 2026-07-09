@@ -211,6 +211,14 @@ suspenders. A component-tier assertion (M4) must prove a scan completes with egr
 This also amends D-5's allowlist note: `--offline` (flag) is the actual egress control, the env
 var alone is insufficient.
 
+**Status — IMPLEMENTED in M3.** `pkg/mikebom/wrapper.go` prepends `--offline` to argv (before the
+`sbom scan` subcommand, since it is a global flag) whenever enrichment is off, and keeps
+`MIKEBOM_OFFLINE=1` in the constructed child-env allowlist. Argv-level proof:
+`pkg/mikebom/wrapper_test.go:TestGenerateSBOM_ArgvHasOffline` asserts `--offline` is present and
+precedes `sbom`. The env allowlist (never `os.Environ()`) is proven by
+`TestGenerateSBOM_ChildEnvIsAllowlist` (adapter secrets do not leak; `MIKEBOM_OFFLINE=1` present).
+The egress-blackholed component-tier assertion remains M4 scope.
+
 ## Environment notes / things I could not verify
 
 - Live `docker buildx imagetools inspect` of the published image: **not run** — package is private

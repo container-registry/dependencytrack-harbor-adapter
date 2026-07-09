@@ -2,12 +2,11 @@ package main
 
 import "testing"
 
-func TestEnvOr(t *testing.T) {
-	t.Setenv("SCANNER_TEST_KEY", "set")
-	if got := envOr("SCANNER_TEST_KEY", "fallback"); got != "set" {
-		t.Fatalf("envOr with value set = %q, want %q", got, "set")
+func TestScannerIdentity(t *testing.T) {
+	if scannerName != "mikebom" {
+		t.Fatalf("scannerName = %q, want %q", scannerName, "mikebom")
 	}
-	if got := envOr("SCANNER_TEST_UNSET_KEY", "fallback"); got != "fallback" {
-		t.Fatalf("envOr with unset key = %q, want %q", got, "fallback")
+	if scannerVendor != "Kusari" {
+		t.Fatalf("scannerVendor = %q, want %q", scannerVendor, "Kusari")
 	}
 }
