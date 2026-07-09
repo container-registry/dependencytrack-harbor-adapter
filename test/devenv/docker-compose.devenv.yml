@@ -1,0 +1,42 @@
+# Adapter overlay for the Harbor devenv e2e (plan M7).
+#
+# The adapter joins the devenv's compose network as an external network so Harbor
+# core can reach http://mikebom-adapter:8080 for the registration ping and the
+# jobservice can poll the report endpoint, and the adapter can reach
+# http://core:8080 and redis:6379 in the same network. Docker Desktop cannot dial
+# host-published ports from inside a container, so the shared network is mandatory.
+#
+# COMPOSE_PROJECT_NAME for the harbor devenv is harbor-{SLOT} (SLOT=0 default), so
+# the network is harbor-0_default. Override with HARBOR_NETWORK if you brought the
+# devenv up on a different slot (verify: docker network ls | grep harbor).
+#
+# The image is built out-of-band by run-e2e.sh (task image), NOT via a compose
+# build: the pinned mikebom base lives in a private ghcr package, so the build
+# needs the MIKEBOM_IMAGE build-arg override that a plain compose build cannot pass.
+services:
+  mikebom-adapter:
+    image: ${ADAPTER_IMAGE:-mikebom-harbor-adapter:e2e}
+    environment:
+      SCANNER_LOG_LEVEL: debug
+      SCANNER_API_SERVER_ADDR: ":8080"
+      # Only SCANNER_REDIS_URL (the adapter has no legacy per-subsystem URL vars).
+      SCANNER_REDIS_URL: redis://redis:6379
+      # Redis namespaces set explicitly (do not rely on defaults in a deployment).
+      SCANNER_STORE_REDIS_NAMESPACE: harbor.scanner.mikebom:data-store
+      SCANNER_JOB_QUEUE_REDIS_NAMESPACE: harbor.scanner.mikebom:job-queue
+      SCANNER_MIKEBOM_WORK_DIR: /home/scanner/work
+    read_only: true
+    # tmpfs at /home/scanner: HOME and the per-job work dir live here over a
+    # read-only root FS. mode 1777 lets uid 65532 create the work/ subdir.
+    tmpfs:
+      - /home/scanner:size=4G,mode=1777
+    ports:
+      # Host access for debugging/metadata probing only; Harbor uses the network.
+      - "8090:8080"
+    networks:
+      - harbor
+
+networks:
+  harbor:
+    external: true
+    name: ${HARBOR_NETWORK:-harbor-0_default}
