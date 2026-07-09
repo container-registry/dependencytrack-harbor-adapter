@@ -1,0 +1,34 @@
+---
+name: Main Image
+
+# The workflow_dispatch trigger doubles as the pre-release WIF smoke test: it
+# exercises the full OIDC -> federated-robot login -> multi-arch push path before
+# the first tagged release exists.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish-image:
+    name: Publish Latest Image
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      checkout_ref: ${{ github.sha }}
+      image_tag: latest
+      # version omitted: publish-image derives it via git describe
+      registry_address: ${{ vars.REGISTRY_ADDRESS || '8gears.container-registry.com' }}
+      registry_project: ${{ vars.REGISTRY_PROJECT || '8gcr' }}

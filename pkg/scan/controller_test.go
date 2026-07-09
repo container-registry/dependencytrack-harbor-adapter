@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,19 +14,47 @@ import (
 	"github.com/container-registry/mikebom-harbor-adapter/pkg/harbor"
 	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
 	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
+	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence"
 	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence/memory"
 	"github.com/container-registry/mikebom-harbor-adapter/pkg/registry"
 )
+
+// ctxStore wraps a Store and rejects writes on an expired context, mirroring
+// go-redis (which fails any command once ctx is Done). The memory store ignores
+// ctx, so it cannot exercise the detached-context terminal writes on its own.
+type ctxStore struct {
+	persistence.Store
+}
+
+func (s ctxStore) UpdateStatus(ctx context.Context, key job.ScanJobKey, status job.ScanJobStatus, msg ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.Store.UpdateStatus(ctx, key, status, msg...)
+}
+
+func (s ctxStore) UpdateReport(ctx context.Context, key job.ScanJobKey, report json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.Store.UpdateReport(ctx, key, report)
+}
 
 type fakePuller struct {
 	called bool
 	ref    registry.ImageRef
 	err    error
+	// onCall fires when PullToTarball is invoked; tests use it to expire the job
+	// context mid-scan (simulating the per-job deadline firing during the pull).
+	onCall func()
 }
 
 func (p *fakePuller) PullToTarball(_ context.Context, ref registry.ImageRef, _ string) error {
 	p.called = true
 	p.ref = ref
+	if p.onCall != nil {
+		p.onCall()
+	}
 	return p.err
 }
 
@@ -140,6 +169,62 @@ func TestScan_PullErrorMarksFailed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, job.Failed, got.Status)
 	assert.Contains(t, got.Error, "401 unauthorized")
+}
+
+// TestScan_FailedWriteSurvivesExpiredContext proves the Failed status write is not
+// lost when the per-job deadline (queue.runJob) has already fired. Against a store
+// that fails writes on an expired context (like go-redis), reusing the job context
+// for the Failed write would leave the job stuck Pending; the detached write must
+// still land it as Failed.
+func TestScan_FailedWriteSurvivesExpiredContext(t *testing.T) {
+	store := ctxStore{Store: memory.NewStore()}
+	key := newJobKey()
+	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
+
+	ctrl := NewController(store, &fakePuller{}, &fakeWrapper{},
+		harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "v"}, t.TempDir())
+	req := &harbor.ScanRequest{
+		Registry: harbor.Registry{URL: "https://core.harbor.domain"},
+		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
+	}
+
+	// Job context already past its deadline: every write on it fails.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	require.NoError(t, ctrl.Scan(ctx, key, req))
+
+	got, err := store.Get(context.Background(), key)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, job.Failed, got.Status, "an expired job context must not leave the job Pending")
+}
+
+// TestScan_FinishedWriteSurvivesDeadlineDuringScan proves the terminal report and
+// Finished writes are detached too: a scan that completes just as the deadline
+// fires (here, cancelled during the pull) must still be recorded as Finished.
+func TestScan_FinishedWriteSurvivesDeadlineDuringScan(t *testing.T) {
+	store := ctxStore{Store: memory.NewStore()}
+	key := newJobKey()
+	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel the job context while the pull is in flight (after the Pending write,
+	// before the terminal writes). Only the detached terminal writes survive this.
+	puller := &fakePuller{onCall: cancel}
+	spdx := json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)
+	ctrl := NewController(store, puller, &fakeWrapper{sbom: spdx},
+		harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "v"}, t.TempDir())
+	req := &harbor.ScanRequest{
+		Registry: harbor.Registry{URL: "https://core.harbor.domain"},
+		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
+	}
+	require.NoError(t, ctrl.Scan(ctx, key, req))
+
+	got, err := store.Get(context.Background(), key)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, job.Finished, got.Status, "a scan that completed under the deadline must record Finished")
+	require.NotNil(t, got.Report)
 }
 
 func TestApplyAuth(t *testing.T) {

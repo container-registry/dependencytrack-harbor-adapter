@@ -27,6 +27,14 @@ import (
 
 const tarballName = "image.tar"
 
+// statusWriteTimeout bounds the terminal status/report writes. Those writes run on
+// a context detached from the per-job deadline (queue.runJob) so a job that hit the
+// deadline is still recorded as Failed, and a job that finished just under the
+// deadline is still recorded as Finished. go-redis fails any command on an expired
+// context, so reusing the job context here would leave the job stuck Pending until
+// its TTL, and Harbor would 302-poll it for up to ScanJobTTL before 404ing.
+const statusWriteTimeout = 10 * time.Second
+
 // Clock is injectable so tests can pin generated_at.
 type Clock interface{ Now() time.Time }
 
@@ -62,7 +70,11 @@ func (c *controller) Scan(ctx context.Context, scanJobKey job.ScanJobKey, reques
 	if err := c.scan(ctx, scanJobKey, request); err != nil {
 		errMsg := err.Error()
 		slog.Error("Scan failed", slog.String("scan_job_id", scanJobKey.ID), slog.String("err", errMsg))
-		if uErr := c.store.UpdateStatus(ctx, scanJobKey, job.Failed, errMsg); uErr != nil {
+		// Detach from ctx: the per-job deadline may already have fired (that is
+		// precisely how most failures arrive), and the Failed write must still land.
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
+		defer cancel()
+		if uErr := c.store.UpdateStatus(writeCtx, scanJobKey, job.Failed, errMsg); uErr != nil {
 			return xerrors.Errorf("updating scan job as failed: %v", uErr)
 		}
 	}
@@ -119,10 +131,15 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 		return err
 	}
 
-	if err = c.store.UpdateReport(ctx, scanJobKey, envelope); err != nil {
+	// Terminal writes run detached from the job deadline: a scan that completed
+	// just under the deadline must still be recorded as Finished, not lost to an
+	// expired context (same window that strands a Failed write, escalated blocker).
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
+	defer cancel()
+	if err = c.store.UpdateReport(writeCtx, scanJobKey, envelope); err != nil {
 		return xerrors.Errorf("saving scan report: %v", err)
 	}
-	if err = c.store.UpdateStatus(ctx, scanJobKey, job.Finished); err != nil {
+	if err = c.store.UpdateStatus(writeCtx, scanJobKey, job.Finished); err != nil {
 		return xerrors.Errorf("updating scan job status: %v", err)
 	}
 	return nil

@@ -1,6 +1,4 @@
-# CI gates for pull requests and pushes to main. M4 seeds the unit + component
-# gates; M5 extends this file / adds the hygiene, pr-title, publish and
-# release-please workflows.
+# CI gates for pull requests and pushes to main, plus a weekly vuln-check sweep.
 #
 # The component job builds the REAL adapter image (which bundles the real mikebom
 # binary) and runs `task test:component` against it. The mikebom base image is
@@ -24,63 +22,62 @@ on:
       - "docs/**"
       - "LICENSE"
       - "NOTICE"
+  schedule:
+    # Weekly vulnerability sweep of main (only the vuln-check job runs).
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
 
+# The event name is part of the group so the weekly scheduled run cannot
+# cancel an in-flight push run on main (or vice versa).
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test-unit:
-    name: Unit Tests
+  build:
+    name: Build Binaries
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+      - uses: ./.github/actions/setup
+      - name: Cross-compile all release platforms
+        run: task build PLATFORMS=linux/amd64,linux/arm64
+
+  test-unit:
+    name: Unit Tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          go-version-file: go.mod
-      - name: Install Task
-        run: |
-          version="$(grep '^TASK_VERSION=' versions.env | cut -d= -f2)"
-          version="${version#v}"
-          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_linux_amd64.tar.gz" -o /tmp/task.tar.gz
-          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_checksums.txt" -o /tmp/task_checksums.txt
-          (cd /tmp && grep "  task_linux_amd64.tar.gz$" task_checksums.txt | sha256sum -c -)
-          tar -xzf /tmp/task.tar.gz -C /tmp task
-          sudo install -m 0755 /tmp/task /usr/local/bin/task
-          task --version
+          persist-credentials: false
+      - uses: ./.github/actions/setup
       - name: Run unit tests
         run: task test
 
   test-component:
     name: Component Tests
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    # Surface the secret as env so the login step's `if:` can gate on it: the
+    # `secrets` context is not available in a step-level `if`, only `env` is.
+    env:
+      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
-        with:
-          go-version-file: go.mod
-      - name: Install Task
-        run: |
-          version="$(grep '^TASK_VERSION=' versions.env | cut -d= -f2)"
-          version="${version#v}"
-          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_linux_amd64.tar.gz" -o /tmp/task.tar.gz
-          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_checksums.txt" -o /tmp/task_checksums.txt
-          (cd /tmp && grep "  task_linux_amd64.tar.gz$" task_checksums.txt | sha256sum -c -)
-          tar -xzf /tmp/task.tar.gz -C /tmp task
-          sudo install -m 0755 /tmp/task /usr/local/bin/task
-          task --version
+      - uses: ./.github/actions/setup
       # The mikebom base image is a private ghcr package (docs/spike-m1.md). Log in
       # when a read token is provided; a no-op otherwise (works once the package is
       # public or when MIKEBOM_MIRROR_IMAGE points at an accessible mirror).
       - name: Log in to ghcr.io for the mikebom base image
-        if: ${{ secrets.GHCR_READ_TOKEN != '' }}
+        if: ${{ env.GHCR_READ_TOKEN != '' }}
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
         with:
           registry: ghcr.io
@@ -91,3 +88,40 @@ jobs:
           # Optional mirror override for the private mikebom base image.
           MIKEBOM_IMAGE: ${{ vars.MIKEBOM_MIRROR_IMAGE }}
         run: task test:component
+
+  lint-go:
+    name: Go Lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run Go lint
+        run: task lint:local
+
+  lint-yaml:
+    name: YAML Lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          go: "false"
+      - name: Run YAML lint
+        run: task lint:yaml
+
+  vuln-check:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run govulncheck
+        run: task vuln-check
