@@ -1,0 +1,19 @@
+mikebom-harbor-adapter
+Copyright 2026 The mikebom-harbor-adapter authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Bundled third-party software
+--------------------------------------------------------------------------------
+
+This product's container image bundles the mikebom SBOM CLI binary, redistributed
+unmodified from the upstream release image.
+
+  mikebom
+  Copyright (c) The Kusari contributors
+  Licensed under the Apache License, Version 2.0
+  https://github.com/kusari-oss/mikebom
+
+A copy of the mikebom license is shipped inside the container image at
+/licenses/mikebom-LICENSE, as required by the Apache-2.0 redistribution terms.

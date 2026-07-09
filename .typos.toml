@@ -1,0 +1,45 @@
+# Configuration for typos spell checker
+# https://github.com/crate-ci/typos
+#
+# Scope: markdown files (full content) and YAML files (comments only).
+# Go comments are checked by misspell via golangci-lint (.golangci.yaml).
+# The hygiene workflow extracts YAML comment lines into temp files
+# before running typos.
+
+[default]
+extend-ignore-identifiers-re = [
+    # Hex strings and base64 blobs
+    "[A-Za-z0-9+/]{20,}",
+]
+
+[default.extend-words]
+# Container/OCI terminology
+oci  = "oci"
+oras = "oras"
+# Common Go abbreviations referenced in docs
+cfg  = "cfg"
+ctx  = "ctx"
+
+[files]
+extend-exclude = [
+    # Dependency checksums
+    "go.sum",
+
+    # Claude Code agent/plan files (not shipped)
+    ".claude/",
+
+    # Build artifacts
+    "vendor/",
+    "bin/",
+    "dist/",
+]
+
+[type.md]
+extend-ignore-re = [
+    # URLs
+    "https?://[^\\s]+",
+    # Code blocks
+    "```[\\s\\S]*?```",
+    # Inline code
+    "`[^`]+`",
+]

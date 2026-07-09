@@ -1,4 +1,14 @@
+.idea/
+.vscode/
+
+# Build artifacts
 bin/
 dist/
 coverage.txt
+
+# Task fingerprint cache
 .task/
+
+# Directory Cache Files
+.DS_Store
+thumbs.db

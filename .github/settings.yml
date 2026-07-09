@@ -1,0 +1,124 @@
+# Repository Settings (declarative; applied by .github/workflows/apply-settings.yml)
+#
+# YAML tree maps to GitHub API paths (base: /repos/{owner}/{repo}):
+#   repository                   -> PATCH /repos/{owner}/{repo}
+#   labels.{name}                -> PUT /repos/{owner}/{repo}/labels/{name}
+#   branches.{name}.protection   -> PUT /repos/{owner}/{repo}/branches/{name}/protection
+#   security                     -> PATCH /repos/{owner}/{repo} (security_and_analysis)
+#   code_scanning                -> PATCH /repos/{owner}/{repo}/code-scanning/default-setup
+#
+# Reference: https://docs.github.com/en/rest/repos
+#
+# Branch protection is owned solely by this file (D-12). Squash-merge-only is
+# load-bearing for release-please (merge commits break changelog parsing).
+
+repository:
+  description: Harbor Pluggable Scanner Adapter that generates SBOMs using mikebom.
+  homepage: ""
+  topics: [harbor, scanner-adapter, sbom, spdx, mikebom, security]
+  visibility: public
+  has_issues: true
+  has_projects: false
+  has_wiki: false
+  has_downloads: true
+  has_discussions: false
+  is_template: false
+  default_branch: main
+  allow_forking: true
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: false
+  delete_branch_on_merge: true
+  allow_auto_merge: false
+  allow_update_branch: true
+  squash_merge_commit_title: PR_TITLE
+  squash_merge_commit_message: PR_BODY
+  merge_commit_title: MERGE_MESSAGE
+  merge_commit_message: PR_TITLE
+  web_commit_signoff_required: false
+
+labels:
+  blocked:
+    color: e11d21
+    description: Blocked by another issue or PR
+  breaking-change:
+    color: b60205
+    description: Breaking change requiring major version bump
+  bug:
+    color: d73a4a
+    description: Something isn't working
+  component/ci:
+    color: c5def5
+    description: CI/CD related
+  component/docs:
+    color: c5def5
+    description: Documentation related
+  dependencies:
+    color: 0366d6
+    description: Dependencies update
+  do-not-merge:
+    color: e11d21
+    description: PR should not be merged
+  documentation:
+    color: 0075ca
+    description: Improvements or additions to documentation
+  enhancement:
+    color: a2eeef
+    description: New feature or request
+  good first issue:
+    color: 7057ff
+    description: Good for newcomers
+  help wanted:
+    color: "008672"
+    description: Extra attention is needed
+  needs-info:
+    color: ffffff
+    description: Additional information needed
+  needs-rebase:
+    color: e11d21
+    description: PR needs to be rebased
+  needs-triage:
+    color: ededed
+    description: Needs initial triage by maintainers
+  proposal:
+    color: fbca04
+    description: Architectural proposal requiring discussion
+  question:
+    color: d876e3
+    description: Further information is requested
+  security:
+    color: d93f0b
+    description: Security-related issue or fix
+  wip:
+    color: fef2c0
+    description: Work in progress
+
+  # Conventional commit type labels
+  chore:
+    color: fef2c0
+    description: Maintenance task
+  perf:
+    color: f9d0c4
+    description: Performance improvement
+  refactor:
+    color: d4c5f9
+    description: Code refactoring
+  test:
+    color: bfdadc
+    description: Test-related changes
+  build:
+    color: c2e0c6
+    description: Build system changes
+
+security:
+  secret_scanning:
+    status: enabled
+  secret_scanning_push_protection:
+    status: enabled
+  dependabot_security_updates:
+    status: enabled
+
+code_scanning:
+  state: not-configured
+  query_suite: default
+  languages: [actions, go]

@@ -1,0 +1,30 @@
+# golangci-lint v2 configuration (https://golangci-lint.run)
+# Deliberately permissive for the initial migration; tighten over time.
+---
+version: "2"
+
+run:
+  build-tags:
+    - component
+    - integration
+
+linters:
+  default: standard
+  enable:
+    - misspell
+  settings:
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+  exclusions:
+    generated: lax

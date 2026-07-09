@@ -184,15 +184,36 @@ http://core:8080`) and are the reason for D-1 (adapter pulls the artifact itself
    there is no way to *inject a pre-minted Bearer access token* as the input credential. This is
    why adapter D-2 returns 422 for a Bearer-type Harbor authorization.
 
+## Offline enrichment anomaly — ROOT-CAUSED (updated)
+
+The golang scan logged `ClearlyDefined enriched components ... count=16` despite
+`MIKEBOM_OFFLINE=1`. This is NOT a bundled dataset; it was a **live enrichment pass**. Root
+cause, from source:
+
+- The `--offline` clap arg has **no env binding** (`mikebom-cli/src/main.rs:75-83`).
+  `main.rs:280-284` bridges the *flag* to the env var (flag -> env), but there is no
+  env -> flag path. So setting `MIKEBOM_OFFLINE=1` in the environment never flips `cli.offline`.
+- The three enrichment sources default **ON** (`resolve_enrich_sources`,
+  `scan_cmd.rs:1389-1394`) and are gated on `cli.offline` (the flag), not the env var:
+  `cli.offline` (`main.rs:355`) -> scan_cmd `execute` `offline` param (`:1767`) ->
+  `ClearlyDefinedSource::new(offline)` (`:2252`), `DepsDevSource` (`:2236`),
+  `deps_dev_graph` (`:2276`). Only the golang `graph_resolver`, `package_db`, and binary
+  fingerprint paths read `MIKEBOM_OFFLINE` from the env directly.
+- Consequence: with only the env var set, every scan makes live outbound HTTPS calls to
+  `deps.dev` and `clearlydefined.io`. Behind the planned NetworkPolicy those calls hang until
+  client timeouts, pushing scans toward the 5m subprocess timeout, adding unbounded latency
+  variance, and breaking the SSRF egress-control assumption (D-5).
+
+**Fix (carried into M3):** the mikebom wrapper must pass **`--offline` in argv**, not rely on
+the env var. Keep `MIKEBOM_OFFLINE=1` in the child-process env allowlist as well, because the
+golang graph_resolver / package_db / binary-fingerprint paths only read the env var; belt and
+suspenders. A component-tier assertion (M4) must prove a scan completes with egress blackholed.
+This also amends D-5's allowlist note: `--offline` (flag) is the actual egress control, the env
+var alone is insufficient.
+
 ## Environment notes / things I could not verify
 
 - Live `docker buildx imagetools inspect` of the published image: **not run** — package is private
   and the agent cannot complete an interactive `gh auth refresh -s read:packages` browser flow.
   Multi-arch + digest are from the release CI run log instead; runtime is proven against a
   checksum-verified byte-identical local reconstruction of the image.
-- Offline enrichment anomaly: the golang scan logged `ClearlyDefined enriched components ... count=16`
-  despite `MIKEBOM_OFFLINE=1`. No outbound network was expected. Likely a bundled/on-disk
-  ClearlyDefined dataset rather than a live call, but this was not chased down and is worth
-  confirming before relying on `MIKEBOM_OFFLINE=1` as a hard egress control (SSRF mitigation).
-</content>
-</invoke>

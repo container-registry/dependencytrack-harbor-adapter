@@ -1,0 +1,45 @@
+# Local dev harness: redis + the adapter image on one compose network.
+# Services reach each other by service name over the compose network (the Docker
+# Desktop daemon cannot dial host localhost-mapped ports, so redis is addressed as
+# redis://redis:6379, never via a host port mapping).
+#
+# Build args come from versions.env; export them first (the Taskfile `dev:up` task
+# already loads versions.env via dotenv). MIKEBOM_IMAGE overrides the mikebom source
+# image for local builds while the ghcr package is private (see docs/spike-m1.md).
+---
+services:
+  redis:
+    image: redis:7-alpine
+    networks: [adapter]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  adapter:
+    build:
+      context: .
+      args:
+        MIKEBOM_BASE_IMAGE_VERSION: ${MIKEBOM_BASE_IMAGE_VERSION}
+        MIKEBOM_IMAGE_DIGEST: ${MIKEBOM_IMAGE_DIGEST}
+        BASE_IMAGE: gcr.io/distroless/cc-debian12:${DISTROLESS_BASE_IMAGE_TAG}@${DISTROLESS_IMAGE_DIGEST}
+        MIKEBOM_IMAGE: ${MIKEBOM_IMAGE:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SCANNER_LOG_LEVEL: debug
+      SCANNER_REDIS_URL: redis://redis:6379
+    # Runtime hardening mirrors production: nonroot, read-only root FS, writable
+    # work dir via tmpfs at HOME (=/home/scanner).
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /home/scanner
+    ports:
+      - "8080:8080"
+    networks: [adapter]
+
+networks:
+  adapter: {}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "enabledManagers": ["gomod", "github-actions", "custom.regex"],
+  "labels": ["dependencies"],
+  "customManagers": [
+    {
+      "description": "versions.env: mikebom source image (tag + digest)",
+      "customType": "regex",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)\\s+MIKEBOM_BASE_IMAGE_VERSION=(?<currentValue>\\S+)\\s+MIKEBOM_IMAGE_DIGEST=(?<currentDigest>sha256:[a-f0-9]+)"
+      ]
+    },
+    {
+      "description": "versions.env: distroless base image (tag + digest)",
+      "customType": "regex",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\s+DISTROLESS_BASE_IMAGE_TAG=(?<currentValue>\\S+)\\s+DISTROLESS_IMAGE_DIGEST=(?<currentDigest>sha256:[a-f0-9]+)"
+      ]
+    },
+    {
+      "description": "versions.env: single-value tool and binary pins",
+      "customType": "regex",
+      "managerFilePatterns": ["/^versions\\.env$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>github-releases|go|pypi) depName=(?<depName>\\S+)\\s+[A-Z0-9_]+_VERSION=(?<currentValue>\\S+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "A mikebom pin bump is a runtime behavior change; release it as a patch (fix).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/kusari-oss/mikebom"],
+      "semanticCommitType": "fix",
+      "commitMessageTopic": "mikebom",
+      "addLabels": ["mikebom"]
+    },
+    {
+      "description": "Base image / tooling / CI action bumps are chores.",
+      "matchManagers": ["github-actions"],
+      "semanticCommitType": "ci"
+    }
+  ]
+}
