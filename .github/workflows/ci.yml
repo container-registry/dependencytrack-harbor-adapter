@@ -1,0 +1,93 @@
+# CI gates for pull requests and pushes to main. M4 seeds the unit + component
+# gates; M5 extends this file / adds the hygiene, pr-title, publish and
+# release-please workflows.
+#
+# The component job builds the REAL adapter image (which bundles the real mikebom
+# binary) and runs `task test:component` against it. The mikebom base image is
+# pinned to ghcr.io/kusari-oss/mikebom, currently a PRIVATE package (docs/spike-m1.md):
+# until it is public or mirrored, the component job needs either a ghcr read token
+# (secret GHCR_READ_TOKEN) or a mirror reference (variable MIKEBOM_MIRROR_IMAGE).
+---
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: Install Task
+        run: |
+          version="$(grep '^TASK_VERSION=' versions.env | cut -d= -f2)"
+          version="${version#v}"
+          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_linux_amd64.tar.gz" -o /tmp/task.tar.gz
+          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_checksums.txt" -o /tmp/task_checksums.txt
+          (cd /tmp && grep "  task_linux_amd64.tar.gz$" task_checksums.txt | sha256sum -c -)
+          tar -xzf /tmp/task.tar.gz -C /tmp task
+          sudo install -m 0755 /tmp/task /usr/local/bin/task
+          task --version
+      - name: Run unit tests
+        run: task test
+
+  test-component:
+    name: Component Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: Install Task
+        run: |
+          version="$(grep '^TASK_VERSION=' versions.env | cut -d= -f2)"
+          version="${version#v}"
+          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_linux_amd64.tar.gz" -o /tmp/task.tar.gz
+          curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_checksums.txt" -o /tmp/task_checksums.txt
+          (cd /tmp && grep "  task_linux_amd64.tar.gz$" task_checksums.txt | sha256sum -c -)
+          tar -xzf /tmp/task.tar.gz -C /tmp task
+          sudo install -m 0755 /tmp/task /usr/local/bin/task
+          task --version
+      # The mikebom base image is a private ghcr package (docs/spike-m1.md). Log in
+      # when a read token is provided; a no-op otherwise (works once the package is
+      # public or when MIKEBOM_MIRROR_IMAGE points at an accessible mirror).
+      - name: Log in to ghcr.io for the mikebom base image
+        if: ${{ secrets.GHCR_READ_TOKEN != '' }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_READ_TOKEN }}
+      - name: Run component tests against the real adapter image
+        env:
+          # Optional mirror override for the private mikebom base image.
+          MIKEBOM_IMAGE: ${{ vars.MIKEBOM_MIRROR_IMAGE }}
+        run: task test:component

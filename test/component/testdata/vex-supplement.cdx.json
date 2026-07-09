@@ -1,0 +1,18 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "component": {"type": "application", "name": "component-tier-vex-fixture", "version": "0.0.0"}
+  },
+  "components": [
+    {"type": "library", "name": "acme-saas", "version": "1.0.0", "purl": "pkg:generic/acme-saas@1.0.0"}
+  ],
+  "vulnerabilities": [
+    {
+      "id": "CVE-2021-0001",
+      "source": {"name": "NVD"},
+      "affects": [{"ref": "pkg:generic/acme-saas@1.0.0"}]
+    }
+  ]
+}

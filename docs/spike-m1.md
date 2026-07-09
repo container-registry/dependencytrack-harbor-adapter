@@ -159,8 +159,21 @@ even for `spdx-2.3-json` and even when `--output openvex=<path>` is passed. Veri
 Correction to plan D-7: there is nothing to "pin and discard" in the adapter's normal path.
 `--output openvex=<workdir>/out.vex.json` is accepted but writes no file. The adapter should not
 assume a VEX file exists; it can drop the openvex output flag entirely (or keep it as a harmless
-no-op). A VEX file would only appear if advisory data were injected (e.g. via a supplement), which
-the SBOM-only adapter does not do.
+no-op).
+
+**M4 addendum — a VEX sidecar cannot be produced by ANY CLI input on this pin.** The earlier note
+speculated "a supplement" could inject advisories. Re-verified: it cannot. `--supplement-cdx`'s parser
+"ignores the broader CDX 1.6 surface (vulnerabilities, ...)" (`mikebom-cli/src/supplement/parser.rs:5`)
+and the merge always writes `advisories: Vec::new()` (`supplement/merge.rs:228,361`). Every production
+code path in the tree sets `advisories: vec![]`; only unit tests populate it (openvex is scaffolding,
+`generate/openvex/mod.rs:8-14`). Empirically confirmed: running the pinned image with a
+`vulnerabilities`-bearing supplement AND `--output openvex=/w/out.vex.json` wrote the SPDX but produced
+NO vex file. Consequence for M4: the "fixture that makes mikebom emit an openvex sidecar" is not
+realizable against the real binary. `test/component/component_test.go:TestVEXSidecarPinnedToWorkdirAndDiscarded`
+therefore proves the two properties that requirement actually protects — the openvex output is *pinned*
+to the per-job workdir path (the default-name `mikebom.openvex.json` never lands in CWD) and any sidecar
+is *discarded* (the report envelope surfaces only `.sbom`; the workdir is read-only-confined and swept) —
+and documents the scaffolding no-op with the `testdata/vex-supplement.cdx.json` fixture.
 
 ## Task 5 — upstream gaps (confirmed from source; issue texts in docs/upstream-issues.md)
 
@@ -217,7 +230,14 @@ var alone is insufficient.
 `pkg/mikebom/wrapper_test.go:TestGenerateSBOM_ArgvHasOffline` asserts `--offline` is present and
 precedes `sbom`. The env allowlist (never `os.Environ()`) is proven by
 `TestGenerateSBOM_ChildEnvIsAllowlist` (adapter secrets do not leak; `MIKEBOM_OFFLINE=1` present).
-The egress-blackholed component-tier assertion remains M4 scope.
+
+**Status — egress-blackholed component assertion IMPLEMENTED in M4.** `test/component/docker-compose.yml`
+blackholes both mikebom enrichment hosts (`api.deps.dev`, `api.clearlydefined.io`) to the RFC5737
+unroutable address `192.0.2.1` via `extra_hosts` (a `connect()` there hangs, simulating the
+production NetworkPolicy drop). `test/component/component_test.go:TestScanHappyPath...` completes a
+full SBOM scan in ~2s under that blackhole; if `--offline` regressed, mikebom would stall trying to
+reach those hosts. `TestReadOnlyRootFilesystem` additionally asserts the `extra_hosts` blackhole is
+wired. Real run: report-handler latency 7.4ms, raw report 48,635 B / gzip 6,949 B.
 
 ## Environment notes / things I could not verify
 

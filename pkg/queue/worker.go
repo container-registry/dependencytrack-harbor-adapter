@@ -84,7 +84,21 @@ func (w *worker) scanArtifact(ctx context.Context, msg *redis.Message) error {
 	}
 
 	slog.Debug("Executing enqueued scan job", slog.String("scan_job_id", j.Key.ID))
-	return w.controller.Scan(ctx, j.Key, j.Args.ScanRequest)
+	return w.runJob(ctx, j)
+}
+
+// runJob bounds the whole job (registry pull + mikebom scan) by a deadline. Start
+// receives context.Background() from main, and controller.Scan -> puller.PullToTarball
+// had no timeout on the pull path: go-containerregistry's default transport sets only
+// dial/TLS timeouts, so a tarpit or half-open registry could trickle bytes and block
+// the pull forever, permanently consuming this worker goroutine (default concurrency
+// 1 => all scanning halts until process restart, job stuck Pending until the 1h TTL).
+// The deadline is the lock TTL: the job may run for as long as the lock protects it,
+// and no longer. crane honors the ctx via crane.WithContext, so the pull is now bounded.
+func (w *worker) runJob(ctx context.Context, j Job) error {
+	jobCtx, cancel := context.WithTimeout(ctx, w.lockTTL)
+	defer cancel()
+	return w.controller.Scan(jobCtx, j.Key, j.Args.ScanRequest)
 }
 
 func redisLockKey(namespace, jobID string) string {
