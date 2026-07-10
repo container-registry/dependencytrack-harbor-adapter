@@ -124,4 +124,3 @@ hold.
 Forces the Harbor adapter to reject Bearer-type authorizations (D-2: return HTTP 422) and to rely
 on Basic-decoded credentials only. Supporting a supplied Bearer token would let a future
 `--image-src remote` path reuse Harbor's own token instead of re-authenticating.
-</content>

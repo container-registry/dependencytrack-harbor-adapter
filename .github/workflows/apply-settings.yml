@@ -35,7 +35,9 @@ jobs:
 
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
         env:
-          INPUT_MODE: ${{ inputs.mode || 'apply' }}
+          # Left empty when not dispatched so apply-settings.js picks its own default:
+          # 'check' on schedule (drift detection), 'verify' on push.
+          INPUT_MODE: ${{ inputs.mode }}
         with:
           github-token: ${{ secrets.SETTINGS_TOKEN || secrets.GITHUB_TOKEN }}
           script: |

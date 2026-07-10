@@ -61,7 +61,10 @@ func (e *enqueuer) Enqueue(ctx context.Context, request harbor.ScanRequest) (str
 		return "", xerrors.Errorf("no capabilities provided")
 	}
 
-	jobID := makeIdentifier()
+	jobID, err := makeIdentifier()
+	if err != nil {
+		return "", err
+	}
 
 	for _, c := range request.Capabilities {
 		for _, mediaType := range lo.FromPtr(c.Parameters).SBOMMediaTypes {
@@ -116,12 +119,14 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 	return nil
 }
 
-func makeIdentifier() string {
+// makeIdentifier fails rather than returning an empty ID: every job would then
+// collide on the same store key, which is near-undiagnosable in production.
+func makeIdentifier() (string, error) {
 	b := make([]byte, 12)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return ""
+		return "", xerrors.Errorf("generating scan job identifier: %w", err)
 	}
-	return fmt.Sprintf("%x", b)
+	return fmt.Sprintf("%x", b), nil
 }
 
 func redisJobChannel(namespace string) string {

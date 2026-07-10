@@ -45,6 +45,12 @@ func newInstancePool(config etc.RedisPool) (*redis.Client, error) {
 	options.MaxIdleConns = config.MaxIdle
 	options.MaxActiveConns = config.MaxActive
 	options.ConnMaxIdleTime = config.IdleTimeout
+	// SCANNER_REDIS_POOL_*_TIMEOUT is the documented contract and supersedes any
+	// timeout query params in the URL, matching newSentinelPool. Without this the
+	// production redis:// scheme silently fell back to go-redis defaults.
+	options.DialTimeout = config.ConnectionTimeout
+	options.ReadTimeout = config.ReadTimeout
+	options.WriteTimeout = config.WriteTimeout
 	options.OnConnect = func(_ context.Context, cn *redis.Conn) error {
 		slog.Debug("Connecting to Redis", slog.String("connection", cn.String()))
 		return nil

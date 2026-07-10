@@ -146,7 +146,8 @@ func (h *BaseHandler) WriteJSON(res http.ResponseWriter, data any, mimeType MIME
 // given MIME type, gzip-encoding the body when the client accepts it. The SPDX
 // envelope can be multi-MB (M1 spike: golang ~5.5 MB), so the report path must
 // stream stored bytes rather than re-marshal per poll (Harbor's client has a 5s
-// per-request timeout). gzip -9 shrinks the body 5-8x (M1 spike).
+// per-request timeout). gzip shrinks the body 5-8x (M1 spike measured -9; the
+// default level is used here, trading a few percent of size for lower latency).
 func (h *BaseHandler) WriteRawJSON(res http.ResponseWriter, req *http.Request, payload []byte, mimeType MIMEType, statusCode int) {
 	res.Header().Set(HeaderContentType, mimeType.String())
 
