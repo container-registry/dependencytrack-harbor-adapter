@@ -32,8 +32,11 @@ services:
     # work dir via tmpfs at HOME (=/home/scanner).
     user: "65532:65532"
     read_only: true
+    # mode=1777 is load-bearing: the daemon's default tmpfs mode otherwise decides
+    # whether uid 65532 can create the work dir (Docker Desktop allows it, the Linux
+    # engine does not). Size caps the RAM-backed work dir.
     tmpfs:
-      - /home/scanner
+      - /home/scanner:size=2G,mode=1777
     ports:
       - "8080:8080"
     networks: [adapter]

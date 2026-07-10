@@ -58,8 +58,12 @@ services:
     # per-job work dir via tmpfs at HOME (=/home/scanner).
     user: "65532:65532"
     read_only: true
+    # mode=1777 is required, not cosmetic: without it the daemon's default tmpfs mode
+    # decides whether uid 65532 may mkdir the work dir. Docker Desktop's VM happens to
+    # give 1777; the Linux engine on CI runners does not, and the adapter dies with
+    # "work dir not usable ... permission denied". Size caps the RAM-backed work dir.
     tmpfs:
-      - /home/scanner
+      - /home/scanner:size=2G,mode=1777
     ports:
       - "${COMPONENT_ADAPTER_PORT:-8099}:8080"
     networks: [comp]

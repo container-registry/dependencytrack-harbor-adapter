@@ -35,9 +35,11 @@ COPY bin/linux-${TARGETARCH}/scanner-mikebom /usr/local/bin/scanner-mikebom
 
 # Establish the per-job work-dir root owned by the nonroot uid. In production this
 # path is mounted writable (K8s emptyDir / compose tmpfs) over a read-only root FS.
-# Mode 1777 (sticky, like /tmp): a Docker/compose tmpfs mounted over an existing
-# directory inherits that directory's mode but resets ownership to root, so 1777 is
-# what keeps the mount writable by uid 65532 without a per-run tmpfs mode override.
+# The mode here does NOT survive a mount: a tmpfs mounted over this directory gets
+# the daemon's default mode, not this one (Docker Desktop happens to give 1777, the
+# Linux engine does not). Every mount site must therefore say so itself: compose
+# needs `mode=1777`, K8s needs `fsGroup: 65532`. This chown/chmod only covers the
+# unmounted case, e.g. `docker run` with no volume at all.
 COPY --chown=65532:65532 --chmod=1777 image/home-scanner/ /home/scanner/
 
 # Runtime env. Deliberately NO MIKEBOM_* here: the adapter reports the mikebom
