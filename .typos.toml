@@ -12,6 +12,17 @@ extend-ignore-identifiers-re = [
     "[A-Za-z0-9+/]{20,}",
 ]
 
+# typos honors extend-ignore-re only under [default]; a [type.md] copy is silently
+# dropped, which is how `bbfd0ba` (a git short hash) got read as a misspelled `ba`.
+extend-ignore-re = [
+    # URLs
+    "https?://[^\\s]+",
+    # Fenced code blocks
+    "```[\\s\\S]*?```",
+    # Inline code, including git short hashes and image digests
+    "`[^`]+`",
+]
+
 [default.extend-words]
 # Container/OCI terminology
 oci  = "oci"
@@ -34,12 +45,3 @@ extend-exclude = [
     "dist/",
 ]
 
-[type.md]
-extend-ignore-re = [
-    # URLs
-    "https?://[^\\s]+",
-    # Code blocks
-    "```[\\s\\S]*?```",
-    # Inline code
-    "`[^`]+`",
-]

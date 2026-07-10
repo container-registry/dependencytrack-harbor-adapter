@@ -201,7 +201,7 @@ func TestScan_FailedWriteSurvivesExpiredContext(t *testing.T) {
 
 // TestScan_FinishedWriteSurvivesDeadlineDuringScan proves the terminal report and
 // Finished writes are detached too: a scan that completes just as the deadline
-// fires (here, cancelled during the pull) must still be recorded as Finished.
+// fires (here, canceled during the pull) must still be recorded as Finished.
 func TestScan_FinishedWriteSurvivesDeadlineDuringScan(t *testing.T) {
 	store := ctxStore{Store: memory.NewStore()}
 	key := newJobKey()

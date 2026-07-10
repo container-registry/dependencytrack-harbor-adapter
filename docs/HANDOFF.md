@@ -58,17 +58,17 @@ empty). The blockers are entirely in sibling repos the owner controls.
 `git -C . log --oneline main..feat/initial-adapter`:
 
 ```
-3cae269 test(devenv): add Harbor devenv e2e harness (M7)
-bbfd0ba ci: add CI and release plumbing (M5)
-49a8985 feat(test): add component test tier (M4)
-d13ea47 feat(adapter): implement scanner adapter service (M3)
-9d78a0b feat(scaffold): repo scaffold and build tooling (M2)
-905a495 docs(spike): M1 decision spike + upstream gap filing
+b7ce05d test(devenv): add Harbor devenv e2e harness (M7)
+1ae6ae8 ci: add CI and release plumbing (M5)
+f4c1b3d feat(test): add component test tier (M4)
+ff66b06 feat(adapter): implement scanner adapter service (M3)
+4093e67 feat(scaffold): repo scaffold and build tooling (M2)
+2f2552f docs(spike): M1 decision spike + upstream gap filing
 ```
 
 (`main` is a single empty `chore: initial commit` `ff3248b`; the six above are the branch.)
 
-- **M1 — `905a495` — Decision spike + upstream filing.** `docs/spike-m1.md`,
+- **M1 — `2f2552f` — Decision spike + upstream filing.** `docs/spike-m1.md`,
   `docs/upstream-issues.md`. Proves valid SPDX 2.3 out of mikebom fed a docker-save
   tarball; records the mikebom pin (`v0.1.0-alpha.55`, digest
   `sha256:806521fba9319865d1b2f443e498f75a3a34878aaf2bda276356079be8ae2746`); measured SBOM
@@ -78,7 +78,7 @@ d13ea47 feat(adapter): implement scanner adapter service (M3)
   `MIKEBOM_OFFLINE=1` does *not* disable enrichment egress; only the `--offline` argv flag
   does — the wrapper passes `--offline`.
 
-- **M2 — `9d78a0b` — Repo scaffold + build tooling.** LICENSE, NOTICE, README,
+- **M2 — `4093e67` — Repo scaffold + build tooling.** LICENSE, NOTICE, README,
   CONTRIBUTING, SECURITY, CODE_OF_CONDUCT; `go.mod`
   (`github.com/container-registry/mikebom-harbor-adapter`); `.golangci.yaml`, `.yamllint`,
   `.typos.toml`, `lefthook.yml`; `versions.env` (D-5 pins, no GO_VERSION);
@@ -86,7 +86,7 @@ d13ea47 feat(adapter): implement scanner adapter service (M3)
   distroless `cc-debian12:nonroot`, mikebom license files); `compose.yaml`; settings bundle
   under `.github`; `renovate.json` with a versions.env regex manager.
 
-- **M3 — `d13ea47` — Adapter implementation.** `cmd/scanner-mikebom`, `pkg/etc`
+- **M3 — `ff66b06` — Adapter implementation.** `cmd/scanner-mikebom`, `pkg/etc`
   (config + startup checker), `pkg/harbor` (API models, `GetImageRef`), `pkg/http/api/v1`
   (metadata/scan/report/probes/metrics, gzip, Basic property, Bearer 422, vulnerability 422),
   `pkg/registry` (go-containerregistry pull -> docker-save tarball, D-1), `pkg/mikebom`
@@ -95,23 +95,23 @@ d13ea47 feat(adapter): implement scanner adapter service (M3)
   `pkg/job`, `pkg/redisx`; contract golden tests pinning the exact D-3 MIME strings and a
   `RawSBOMReport` round-trip against vendored Harbor `Validate()`.
 
-- **M4 — `49a8985` — Component tier.** `test/component`: compose of `registry:2` (htpasswd)
+- **M4 — `f4c1b3d` — Component tier.** `test/component`: compose of `registry:2` (htpasswd)
   + the real adapter image; full `POST -> 302 + Refresh-After -> 200` loop, failure path,
   read-only-rootfs assertion, report-size/gzip measurement, a VEX-producing fixture.
 
-- **M5 — `bbfd0ba` — CI + release plumbing.** `.github/workflows` (ci, hygiene, pr-title,
+- **M5 — `1ae6ae8` — CI + release plumbing.** `.github/workflows` (ci, hygiene, pr-title,
   publish-image reusable WIF, main-image push+dispatch, release-please);
   `release-please-config.json` + `.release-please-manifest.json` seeded `0.0.0`;
   `docs/RELEASES.md`, `docs/INTEGRATION.md` (with the sbom-only footgun warning).
 
-- **M7 — `3cae269` — Devenv e2e harness.** `test/devenv/run-e2e.sh`,
+- **M7 — `b7ce05d` — Devenv e2e harness.** `test/devenv/run-e2e.sh`,
   `docs/harbor-behavior.md`. Committed; acceptance halted on the four blockers above.
 
-### Final gate evidence (run 2026-07-09, this branch HEAD `3cae269`)
+### Final gate evidence (run 2026-07-09, this branch HEAD `b7ce05d`)
 
 `task build`:
 ```
-task: [build:binary:linux-arm64] go build -trimpath -buildvcs=false -ldflags "... -X main.version=3cae269 ..." -o bin/linux-arm64/scanner-mikebom ./cmd/scanner-mikebom
+task: [build:binary:linux-arm64] go build -trimpath -buildvcs=false -ldflags "... -X main.version=b7ce05d ..." -o bin/linux-arm64/scanner-mikebom ./cmd/scanner-mikebom
 Binaries:
 -rwxr-xr-x  1 vadim  staff    16M  bin/linux-arm64/scanner-mikebom
 ```

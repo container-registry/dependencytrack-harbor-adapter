@@ -2,6 +2,9 @@ module github.com/container-registry/mikebom-harbor-adapter
 
 go 1.26
 
+// GO-2026-5856 (crypto/tls) is fixed in 1.26.5; setup-go resolves this via go-version-file.
+toolchain go1.26.5
+
 require (
 	github.com/caarlos0/env/v6 v6.10.1
 	github.com/google/go-containerregistry v0.21.6
