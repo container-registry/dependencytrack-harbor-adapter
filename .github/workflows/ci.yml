@@ -1,10 +1,8 @@
 # CI gates for pull requests and pushes to main, plus a weekly vuln-check sweep.
 #
 # The component job builds the REAL adapter image (which bundles the real mikebom
-# binary) and runs `task test:component` against it. The mikebom base image is
-# pinned to ghcr.io/kusari-oss/mikebom, currently a PRIVATE package (docs/spike-m1.md):
-# until it is public or mirrored, the component job needs either a ghcr read token
-# (secret GHCR_READ_TOKEN) or a mirror reference (variable MIKEBOM_MIRROR_IMAGE).
+# binary) and runs `task test:component` against it. mikebom is fetched from its
+# public, checksum-verified release tarball, so no registry credentials are needed.
 ---
 name: CI
 
@@ -65,28 +63,14 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # Surface the secret as env so the login step's `if:` can gate on it: the
-    # `secrets` context is not available in a step-level `if`, only `env` is.
-    env:
-      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      # The mikebom base image is a private ghcr package (docs/spike-m1.md). Log in
-      # when a read token is provided; a no-op otherwise (works once the package is
-      # public or when MIKEBOM_MIRROR_IMAGE points at an accessible mirror).
-      - name: Log in to ghcr.io for the mikebom base image
-        if: ${{ env.GHCR_READ_TOKEN != '' }}
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_READ_TOKEN }}
+      # No registry login: `task build:mikebom` fetches the mikebom CLI from its
+      # public, checksum-verified release tarball (versions.env).
       - name: Run component tests against the real adapter image
-        env:
-          # Optional mirror override for the private mikebom base image.
-          MIKEBOM_IMAGE: ${{ vars.MIKEBOM_MIRROR_IMAGE }}
         run: task test:component
 
   lint-go:

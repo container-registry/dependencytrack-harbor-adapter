@@ -11,8 +11,8 @@
 # devenv up on a different slot (verify: docker network ls | grep harbor).
 #
 # The image is built out-of-band by run-e2e.sh (task image), NOT via a compose
-# build: the pinned mikebom base lives in a private ghcr package, so the build
-# needs the MIKEBOM_IMAGE build-arg override that a plain compose build cannot pass.
+# build: the Dockerfile COPYs host-staged binaries out of bin/linux-<arch>/, which
+# `task image` populates via build / build:lprobe / build:mikebom.
 services:
   mikebom-adapter:
     image: ${ADAPTER_IMAGE:-mikebom-harbor-adapter:e2e}

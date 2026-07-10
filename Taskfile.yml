@@ -47,11 +47,6 @@ vars:
   IMAGE_PLATFORMS: '{{.IMAGE_PLATFORMS | default "linux/amd64,linux/arm64"}}'
   IMAGE_BUILDER: "mikebom-adapter-multiarch"
 
-  # Optional override of the mikebom source image (first Dockerfile stage). The
-  # canonical pin lives in the Dockerfile (digest-pinned ghcr.io/kusari-oss/mikebom);
-  # this override exists because that ghcr package is currently private, so local
-  # builds point at a byte-identical mikebom image (see docs/spike-m1.md).
-  MIKEBOM_IMAGE: '{{.MIKEBOM_IMAGE | default ""}}'
   # Digest-pinned distroless base assembled from versions.env.
   BASE_IMAGE: 'gcr.io/distroless/cc-debian12:{{.DISTROLESS_BASE_IMAGE_TAG}}@{{.DISTROLESS_IMAGE_DIGEST}}'
 
@@ -133,6 +128,49 @@ tasks:
       - cmd: echo "{{.LPROBE_VERSION}}" > bin/{{.PLATFORM}}/.lprobe-version
         silent: true
 
+  build:mikebom:
+    desc: "Fetch the pinned mikebom CLI for PLATFORMS (image dependency)"
+    vars:
+      PLATFORMS: '{{.PLATFORMS | default .CI_PLATFORMS}}'
+    cmds:
+      - for: {var: PLATFORMS, split: ','}
+        task: 'build:mikebom:{{.ITEM | trim | replace "/" "-"}}'
+
+  build:mikebom:*:
+    desc: "Fetch pinned mikebom for one platform, e.g. build:mikebom:linux-arm64"
+    vars:
+      PLATFORM: '{{index .MATCH 0}}'
+      GOARCH: '{{index (splitList "-" (index .MATCH 0)) 1}}'
+    status:
+      - test -x bin/{{.PLATFORM}}/mikebom
+      - test "$(cat bin/{{.PLATFORM}}/.mikebom-version 2>/dev/null)" = "{{.MIKEBOM_CLI_VERSION}}"
+    cmds:
+      - cmd: mkdir -p bin/{{.PLATFORM}}
+        silent: true
+      # Release tarballs are public; the ghcr container package is not (docs/spike-m1.md).
+      # The binary here is byte-identical to the one in the upstream image.
+      - |
+        case '{{.GOARCH}}' in
+          amd64) rust_arch='x86_64';  sha='{{.MIKEBOM_CLI_SHA256_LINUX_AMD64}}' ;;
+          arm64) rust_arch='aarch64'; sha='{{.MIKEBOM_CLI_SHA256_LINUX_ARM64}}' ;;
+          *) echo "unsupported mikebom arch: {{.GOARCH}}" >&2; exit 1 ;;
+        esac
+        stem="mikebom-{{.MIKEBOM_CLI_VERSION}}-${rust_arch}-unknown-linux-gnu"
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        url="https://github.com/kusari-oss/mikebom/releases/download/{{.MIKEBOM_CLI_VERSION}}/${stem}.tar.gz"
+        curl -sSfL "$url" -o "$tmp/mikebom.tar.gz"
+        if command -v sha256sum >/dev/null 2>&1; then
+          echo "${sha}  $tmp/mikebom.tar.gz" | sha256sum -c -
+        else
+          echo "${sha}  $tmp/mikebom.tar.gz" | shasum -a 256 -c -
+        fi
+        tar -xzf "$tmp/mikebom.tar.gz" -C "$tmp"
+        install -m 0755 "$tmp/${stem}/mikebom" bin/{{.PLATFORM}}/mikebom
+        install -m 0644 "$tmp/${stem}/LICENSE" bin/{{.PLATFORM}}/mikebom-LICENSE
+      - cmd: echo "{{.MIKEBOM_CLI_VERSION}}" > bin/{{.PLATFORM}}/.mikebom-version
+        silent: true
+
   # ============================================================================
   # Lint & Vulnerability Checks
   # ============================================================================
@@ -210,9 +248,7 @@ tasks:
       TAG_PREFIX: '{{ternary (printf "%s/%s/" .REGISTRY_ADDRESS .REGISTRY_PROJECT) "" (eq .PUSH "true")}}'
       FULL_TAG: '{{.TAG_PREFIX}}{{.IMAGE_NAME}}:{{.IMAGE_TAG}}'
       # Multi-arch push uses the docker-container builder; local --load uses the
-      # default docker driver so the build can resolve local-only base images (the
-      # mikebom ghcr package is private, so local builds override MIKEBOM_IMAGE with
-      # a locally present image the docker-container driver could not pull).
+      # default docker driver.
       BUILDER_FLAG: '{{if eq .PUSH "true"}}--builder {{.IMAGE_BUILDER}}{{end}}'
     preconditions:
       - sh: '{{if and (ne .PUSH "true") (contains "," .PLATFORMS)}}exit 1{{end}}'
@@ -222,15 +258,14 @@ tasks:
         vars: {PLATFORMS: '{{.PLATFORMS}}'}
       - task: build:lprobe
         vars: {PLATFORMS: '{{.PLATFORMS}}'}
+      - task: build:mikebom
+        vars: {PLATFORMS: '{{.PLATFORMS}}'}
       - '{{if eq .PUSH "true"}}docker buildx inspect {{.IMAGE_BUILDER}} >/dev/null 2>&1 || docker buildx create --name {{.IMAGE_BUILDER}} --driver docker-container --bootstrap{{else}}true{{end}}'
       - >-
         docker buildx build
         {{.BUILDER_FLAG}}
         --platform {{.PLATFORMS}}
-        --build-arg MIKEBOM_BASE_IMAGE_VERSION={{.MIKEBOM_BASE_IMAGE_VERSION}}
-        --build-arg MIKEBOM_IMAGE_DIGEST={{.MIKEBOM_IMAGE_DIGEST}}
         --build-arg BASE_IMAGE={{.BASE_IMAGE}}
-        {{if .MIKEBOM_IMAGE}}--build-arg MIKEBOM_IMAGE={{.MIKEBOM_IMAGE}}{{end}}
         -t {{.FULL_TAG}}
         {{.OUTPUT}}
         .
@@ -312,7 +347,7 @@ tasks:
         echo "  Base image:     {{.BASE_IMAGE}}"
         echo ""
         echo "Pins (versions.env):"
-        echo "  mikebom image:  ghcr.io/kusari-oss/mikebom:{{.MIKEBOM_BASE_IMAGE_VERSION}}@{{.MIKEBOM_IMAGE_DIGEST}}"
+        echo "  mikebom CLI:    {{.MIKEBOM_CLI_VERSION}} (release tarball)"
         echo "  lprobe:         {{.LPROBE_VERSION}}"
         echo "  golangci-lint:  {{.GOLANGCILINT_VERSION}}"
         echo "  govulncheck:    {{.GOVULNCHECK_VERSION}}"

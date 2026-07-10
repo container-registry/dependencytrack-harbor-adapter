@@ -9,11 +9,11 @@
   "labels": ["dependencies"],
   "customManagers": [
     {
-      "description": "versions.env: mikebom source image (tag + digest)",
+      "description": "versions.env: mikebom CLI release tag",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.env$/"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)\\s+MIKEBOM_BASE_IMAGE_VERSION=(?<currentValue>\\S+)\\s+MIKEBOM_IMAGE_DIGEST=(?<currentDigest>sha256:[a-f0-9]+)"
+        "# renovate: datasource=(?<datasource>github-releases) depName=(?<depName>\\S+)\\s+MIKEBOM_CLI_VERSION=(?<currentValue>\\S+)"
       ]
     },
     {

@@ -13,7 +13,6 @@
 #   AUTH                 admin creds                           (default admin:Harbor12345)
 #   HARBOR_NETWORK       external devenv network               (default harbor-0_default)
 #   ADAPTER_IMAGE        adapter image tag                     (default mikebom-harbor-adapter:e2e)
-#   MIKEBOM_LOCAL_IMAGE  local mikebom base (ghcr is private)  (default mikebom-pinned:v0.1.0-alpha.55)
 #   SINGLE_ARCH          arch for the single-manifest fixture  (default amd64)
 #   SKIP_BUILD           set to 1 to reuse an existing image
 set -euo pipefail
@@ -23,7 +22,6 @@ REG="${REG:-localhost:8080}"
 AUTH="${AUTH:-admin:Harbor12345}"
 HARBOR_NETWORK="${HARBOR_NETWORK:-harbor-0_default}"
 ADAPTER_IMAGE="${ADAPTER_IMAGE:-mikebom-harbor-adapter:e2e}"
-MIKEBOM_LOCAL_IMAGE="${MIKEBOM_LOCAL_IMAGE:-mikebom-pinned:v0.1.0-alpha.55}"
 SINGLE_ARCH="${SINGLE_ARCH:-amd64}"
 PROJECT="library"
 REPO="mikebom-e2e"
@@ -58,12 +56,11 @@ echo
 docker network inspect "$HARBOR_NETWORK" >/dev/null 2>&1 || fail "network $HARBOR_NETWORK not found (check SLOT: docker network ls | grep harbor)"
 
 # ---------------------------------------------------------------------------
-# 1. Build the adapter image (mikebom base overridden to a local image).
+# 1. Build the adapter image (task image stages mikebom from its release tarball).
 # ---------------------------------------------------------------------------
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   log "Building adapter image ${ADAPTER_IMAGE}"
-  ( cd "$REPO_ROOT" && task image PUSH=false IMAGE_TAG="${ADAPTER_IMAGE##*:}" \
-      MIKEBOM_IMAGE="${MIKEBOM_LOCAL_IMAGE}" )
+  ( cd "$REPO_ROOT" && task image PUSH=false IMAGE_TAG="${ADAPTER_IMAGE##*:}" )
 fi
 
 # ---------------------------------------------------------------------------

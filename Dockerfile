@@ -2,27 +2,18 @@
 #
 # Multi-stage build for the mikebom Harbor scanner adapter.
 #
-# The adapter binary and the lprobe healthcheck binary are cross-compiled on the
-# host by `task build` / `task build:lprobe` into bin/linux-<arch>/ and COPY'd in
-# (no Go build stage, so multi-arch needs no Go-under-QEMU). The mikebom CLI binary
-# is lifted from the pinned upstream mikebom image. The final base is glibc-based
-# distroless: mikebom releases are *-unknown-linux-gnu, so alpine/musl/static bases
-# are wrong.
+# The adapter binary, the lprobe healthcheck binary, and the mikebom CLI are all
+# staged on the host into bin/linux-<arch>/ by `task build`, `task build:lprobe`,
+# and `task build:mikebom`, then COPY'd in (no Go build stage, so multi-arch needs
+# no Go-under-QEMU). mikebom comes from its checksum-verified public release
+# tarball rather than ghcr.io/kusari-oss/mikebom, which is a private package; the
+# binaries are identical. The final base is glibc-based distroless: mikebom
+# releases are *-unknown-linux-gnu, so alpine/musl/static bases are wrong.
 
-# ---- mikebom binary source stage -------------------------------------------------
-# Pins come from versions.env (passed as build-args by `task image`). The canonical
-# reference is the digest-pinned ghcr image; MIKEBOM_IMAGE is overridable for local
-# builds because that ghcr package is currently private (see docs/spike-m1.md).
-# All ARGs consumed by a FROM must be declared in the global scope, before the
-# first FROM.
-ARG MIKEBOM_BASE_IMAGE_VERSION
-ARG MIKEBOM_IMAGE_DIGEST
-ARG MIKEBOM_IMAGE=ghcr.io/kusari-oss/mikebom:${MIKEBOM_BASE_IMAGE_VERSION}@${MIKEBOM_IMAGE_DIGEST}
 # Digest-pinned distroless cc-debian12:nonroot (glibc + libssl + ca-certificates,
 # nonroot uid 65532, no shell). BASE_IMAGE is passed by `task image` from versions.env.
+# ARGs consumed by a FROM must be declared before the first FROM.
 ARG BASE_IMAGE=gcr.io/distroless/cc-debian12:nonroot
-
-FROM ${MIKEBOM_IMAGE} AS mikebom
 
 # ---- final image -----------------------------------------------------------------
 FROM ${BASE_IMAGE}
@@ -35,8 +26,8 @@ LABEL org.opencontainers.image.title="mikebom-harbor-adapter" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 # mikebom CLI (Apache-2.0) plus its LICENSE, redistributed unmodified (see NOTICE).
-COPY --from=mikebom /mikebom/mikebom /usr/local/bin/mikebom
-COPY --from=mikebom /mikebom/LICENSE /licenses/mikebom-LICENSE
+COPY bin/linux-${TARGETARCH}/mikebom /usr/local/bin/mikebom
+COPY bin/linux-${TARGETARCH}/mikebom-LICENSE /licenses/mikebom-LICENSE
 
 # Healthcheck probe (distroless has no shell/curl) and the adapter binary.
 COPY bin/linux-${TARGETARCH}/lprobe /usr/local/bin/lprobe
