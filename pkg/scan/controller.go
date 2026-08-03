@@ -1,7 +1,9 @@
-// Package scan orchestrates one SBOM scan job: pull the artifact to a docker-save
-// tarball (plan D-1), run mikebom against it, assemble the report envelope, and
-// persist it. The SPDX document is stored pre-marshaled (json.RawMessage) so it
-// is never re-marshaled on a report poll.
+// Package scan orchestrates one SBOM scan job: hand waybill the artifact
+// reference and the pull credentials, assemble the report envelope, and persist
+// it. waybill pulls from the registry itself, so the adapter's only filesystem
+// responsibility is the per-job workdir it gives waybill as HOME/TMPDIR and
+// deletes afterwards. The SPDX document is stored pre-marshaled
+// (json.RawMessage) so it is never re-marshaled on a report poll.
 package scan
 
 import (
@@ -11,21 +13,17 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/mikebom"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/registry"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/waybill"
 )
-
-const tarballName = "image.tar"
 
 // statusWriteTimeout bounds the terminal status/report writes. Those writes run on
 // a context detached from the per-job deadline (queue.runJob) so a job that hit the
@@ -48,17 +46,15 @@ type Controller interface {
 
 type controller struct {
 	store   persistence.Store
-	puller  registry.Puller
-	wrapper mikebom.Wrapper
+	wrapper waybill.Wrapper
 	scanner harbor.Scanner
 	workDir string
 	clock   Clock
 }
 
-func NewController(store persistence.Store, puller registry.Puller, wrapper mikebom.Wrapper, scanner harbor.Scanner, workDir string) Controller {
+func NewController(store persistence.Store, wrapper waybill.Wrapper, scanner harbor.Scanner, workDir string) Controller {
 	return &controller{
 		store:   store,
-		puller:  puller,
 		wrapper: wrapper,
 		scanner: scanner,
 		workDir: workDir,
@@ -101,8 +97,8 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 		return err
 	}
 
-	ref := registry.ImageRef{Name: imageRef, Insecure: insecure}
-	if err = applyAuth(&ref, req.Registry.Authorization); err != nil {
+	target := waybill.ScanTarget{ImageRef: imageRef, Insecure: insecure}
+	if err = applyAuth(&target, req.Registry.Authorization); err != nil {
 		return err
 	}
 
@@ -116,12 +112,7 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 		}
 	}()
 
-	tarballPath := filepath.Join(jobDir, tarballName)
-	if err = c.puller.PullToTarball(ctx, ref, tarballPath); err != nil {
-		return xerrors.Errorf("pulling artifact: %v", err)
-	}
-
-	sbom, err := c.wrapper.GenerateSBOM(ctx, tarballPath, jobDir)
+	sbom, err := c.wrapper.GenerateSBOM(ctx, target, jobDir)
 	if err != nil {
 		return err
 	}
@@ -161,12 +152,15 @@ func (c *controller) buildEnvelope(req *harbor.ScanRequest, sbom json.RawMessage
 }
 
 // applyAuth decodes the scan request authorization into the pull credentials.
-// Empty header = anonymous pull. Basic = decoded username/password (split on the
+// Empty header = anonymous pull (waybill falls through to anonymous when neither
+// credential env var is set). Basic = decoded username/password (split on the
 // first ':' so robot secrets containing ':' survive). Bearer is rejected as
-// defense-in-depth; the handler already 422s it (plan D-2).
-func applyAuth(ref *registry.ImageRef, authorization string) error {
+// defense-in-depth; the handler already 422s it (plan D-2). Bearer stays rejected
+// after the move to waybill's native pull: waybill's credential chain still takes
+// only username/password and performs its own token exchange, so a pre-minted
+// Bearer token has nowhere to go (docs/upstream-issues.md issue 3).
+func applyAuth(target *waybill.ScanTarget, authorization string) error {
 	if authorization == "" {
-		ref.Anonymous = true
 		return nil
 	}
 
@@ -182,8 +176,8 @@ func applyAuth(ref *registry.ImageRef, authorization string) error {
 			return xerrors.Errorf("decoding basic authorization: %v", err)
 		}
 		username, password, _ := strings.Cut(string(creds), ":")
-		ref.Username = username
-		ref.Password = password
+		target.Username = username
+		target.Password = password
 		return nil
 	case "Bearer":
 		return xerrors.Errorf("bearer authorization is not supported; this adapter advertises Basic")

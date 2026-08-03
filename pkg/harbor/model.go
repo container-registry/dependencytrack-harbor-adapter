@@ -1,6 +1,6 @@
 // Package harbor holds the Harbor Scanner Adapter API v1 domain models used by
 // this adapter. It is ported from harbor-scanner-trivy with all vulnerability
-// types stripped: mikebom generates SBOMs only, so the adapter advertises a
+// types stripped: waybill generates SBOMs only, so the adapter advertises a
 // single "sbom" capability.
 package harbor
 
@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
 )
 
 type CapabilityType string
@@ -80,7 +80,7 @@ type ScanResponse struct {
 }
 
 // ScanReport is the SBOM report envelope returned to Harbor. sbom is the entire
-// mikebom SPDX 2.3 document embedded verbatim as a JSON object (Harbor parses it
+// waybill SPDX 2.3 document embedded verbatim as a JSON object (Harbor parses it
 // into RawSBOMReport{sbom map[string]any}). It is stored pre-marshaled as
 // json.RawMessage in the report envelope (see pkg/scan) to avoid re-marshaling
 // the possibly multi-MB document per report poll.

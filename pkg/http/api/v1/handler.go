@@ -1,4 +1,4 @@
-// Package v1 implements the Harbor Scanner Adapter API v1 for the mikebom
+// Package v1 implements the Harbor Scanner Adapter API v1 for the waybill
 // (SBOM-only) adapter: /metadata, /scan, /scan/{id}/report, probes and metrics.
 package v1
 
@@ -17,12 +17,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/samber/lo"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/queue"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/queue"
 )
 
 const (
@@ -36,10 +36,10 @@ const (
 	// ParseInt(v,10,8), so it MUST be <= 127 (plan m4). 5 seconds.
 	refreshAfter = "5"
 
-	vcsURL = "https://github.com/container-registry/mikebom-harbor-adapter"
+	vcsURL = "https://github.com/container-registry/waybill-harbor-adapter"
 )
 
-// ReadyFunc reports readiness (Redis reachable, mikebom exec-able). 503 on error.
+// ReadyFunc reports readiness (Redis reachable, waybill exec-able). 503 on error.
 type ReadyFunc func(ctx context.Context) error
 
 type requestHandler struct {
@@ -164,8 +164,10 @@ func (h *requestHandler) validateScanRequest(req harbor.ScanRequest) *api.Error 
 	}
 
 	// Bearer (or any non-Basic) authorization is rejected at submit: this adapter
-	// advertises Basic, and mikebom's pull path (go-containerregistry) is fed
-	// Basic/anonymous creds only (plan D-2). Empty auth = anonymous pull, allowed.
+	// advertises Basic, and waybill's credential chain takes a username/password
+	// pair only — it performs its own token exchange and cannot be handed a
+	// pre-minted Bearer token (plan D-2, docs/upstream-issues.md issue 3). Empty
+	// auth = anonymous pull, allowed.
 	if req.Registry.Authorization != "" {
 		scheme, _, _ := strings.Cut(req.Registry.Authorization, " ")
 		if scheme != "Basic" {
@@ -275,8 +277,8 @@ func (h *requestHandler) GetMetadata(res http.ResponseWriter, _ *http.Request) {
 		"org.label-schema.vcs-ref":    h.info.Commit,
 		"org.label-schema.vcs":        vcsURL,
 
-		"env.SCANNER_MIKEBOM_TIMEOUT":    h.config.Mikebom.Timeout.String(),
-		"env.SCANNER_MIKEBOM_ENRICHMENT": fmt.Sprintf("%t", h.config.Mikebom.Enrichment),
+		"env.SCANNER_WAYBILL_TIMEOUT":    h.config.Waybill.Timeout.String(),
+		"env.SCANNER_WAYBILL_ENRICHMENT": fmt.Sprintf("%t", h.config.Waybill.Enrichment),
 	}
 
 	metadata := &harbor.ScannerAdapterMetadata{

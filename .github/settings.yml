@@ -13,9 +13,9 @@
 # load-bearing for release-please (merge commits break changelog parsing).
 
 repository:
-  description: Harbor Pluggable Scanner Adapter that generates SBOMs using mikebom.
+  description: Harbor Pluggable Scanner Adapter that generates SBOMs using waybill.
   homepage: ""
-  topics: [harbor, scanner-adapter, sbom, spdx, mikebom, security]
+  topics: [harbor, scanner-adapter, sbom, spdx, waybill, security]
   visibility: public
   has_issues: true
   has_projects: false

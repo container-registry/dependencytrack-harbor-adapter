@@ -11,12 +11,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence/memory"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/registry"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/waybill"
 )
 
 // ctxStore wraps a Store and rejects writes on an expired context, mirroring
@@ -40,31 +40,26 @@ func (s ctxStore) UpdateReport(ctx context.Context, key job.ScanJobKey, report j
 	return s.Store.UpdateReport(ctx, key, report)
 }
 
-type fakePuller struct {
+type fakeWrapper struct {
 	called bool
-	ref    registry.ImageRef
+	target waybill.ScanTarget
+	jobDir string
+	sbom   json.RawMessage
 	err    error
-	// onCall fires when PullToTarball is invoked; tests use it to expire the job
-	// context mid-scan (simulating the per-job deadline firing during the pull).
+	// onCall fires when GenerateSBOM is invoked; tests use it to expire the job
+	// context mid-scan (simulating the per-job deadline firing during the scan).
 	onCall func()
 }
 
-func (p *fakePuller) PullToTarball(_ context.Context, ref registry.ImageRef, _ string) error {
-	p.called = true
-	p.ref = ref
-	if p.onCall != nil {
-		p.onCall()
+func (w *fakeWrapper) Version(context.Context) (string, error) { return "0.1.0-alpha.69", nil }
+
+func (w *fakeWrapper) GenerateSBOM(_ context.Context, target waybill.ScanTarget, jobDir string) (json.RawMessage, error) {
+	w.called = true
+	w.target = target
+	w.jobDir = jobDir
+	if w.onCall != nil {
+		w.onCall()
 	}
-	return p.err
-}
-
-type fakeWrapper struct {
-	sbom json.RawMessage
-	err  error
-}
-
-func (w *fakeWrapper) Version(context.Context) (string, error) { return "0.1.0-alpha.55", nil }
-func (w *fakeWrapper) GenerateSBOM(context.Context, string, string) (json.RawMessage, error) {
 	return w.sbom, w.err
 }
 
@@ -81,12 +76,11 @@ func TestScan_Success(t *testing.T) {
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
 
-	puller := &fakePuller{}
 	spdx := json.RawMessage(`{"spdxVersion":"SPDX-2.3","SPDXID":"SPDXRef-DOCUMENT"}`)
 	wrapper := &fakeWrapper{sbom: spdx}
-	scanner := harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "0.1.0-alpha.55"}
+	scanner := harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "0.1.0-alpha.69"}
 
-	ctrl := NewController(store, puller, wrapper, scanner, t.TempDir())
+	ctrl := NewController(store, wrapper, scanner, t.TempDir())
 	req := &harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "https://core.harbor.domain", Authorization: basicHeader("robot$x", "pw:with:colon")},
 		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
@@ -98,12 +92,12 @@ func TestScan_Success(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, job.Finished, got.Status)
 
-	// Basic creds decoded and passed to the puller (password with colons intact).
-	assert.True(t, puller.called)
-	assert.Equal(t, "robot$x", puller.ref.Username)
-	assert.Equal(t, "pw:with:colon", puller.ref.Password)
-	assert.False(t, puller.ref.Anonymous)
-	assert.False(t, puller.ref.Insecure)
+	// Basic creds decoded and handed to waybill (password with colons intact).
+	assert.True(t, wrapper.called)
+	assert.Equal(t, "core.harbor.domain:443/library/alpine@sha256:deadbeef", wrapper.target.ImageRef)
+	assert.Equal(t, "robot$x", wrapper.target.Username)
+	assert.Equal(t, "pw:with:colon", wrapper.target.Password)
+	assert.False(t, wrapper.target.Insecure)
 
 	// Report envelope round-trips and embeds the SBOM object.
 	var env harbor.ScanReport
@@ -119,9 +113,8 @@ func TestScan_AnonymousWhenNoAuth(t *testing.T) {
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
 
-	puller := &fakePuller{}
-	ctrl := NewController(store, puller, &fakeWrapper{sbom: json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)},
-		harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "v"}, t.TempDir())
+	wrapper := &fakeWrapper{sbom: json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)}
+	ctrl := NewController(store, wrapper, harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "v"}, t.TempDir())
 
 	req := &harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "http://core:8080"}, // http scheme => insecure
@@ -129,8 +122,10 @@ func TestScan_AnonymousWhenNoAuth(t *testing.T) {
 	}
 	require.NoError(t, ctrl.Scan(context.Background(), key, req))
 
-	assert.True(t, puller.ref.Anonymous)
-	assert.True(t, puller.ref.Insecure, "http scheme must derive insecure=true")
+	assert.Empty(t, wrapper.target.Username, "no authorization header must leave the pull anonymous")
+	assert.Empty(t, wrapper.target.Password)
+	assert.True(t, wrapper.target.Insecure, "http scheme must derive insecure=true")
+	assert.Equal(t, "core:8080", wrapper.target.Registry())
 }
 
 func TestScan_WrapperErrorMarksFailed(t *testing.T) {
@@ -138,8 +133,8 @@ func TestScan_WrapperErrorMarksFailed(t *testing.T) {
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
 
-	ctrl := NewController(store, &fakePuller{}, &fakeWrapper{err: errors.New("mikebom blew up")},
-		harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "v"}, t.TempDir())
+	ctrl := NewController(store, &fakeWrapper{err: errors.New("waybill blew up")},
+		harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "v"}, t.TempDir())
 	req := &harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "https://core.harbor.domain"},
 		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
@@ -149,16 +144,24 @@ func TestScan_WrapperErrorMarksFailed(t *testing.T) {
 	got, err := store.Get(context.Background(), key)
 	require.NoError(t, err)
 	assert.Equal(t, job.Failed, got.Status)
-	assert.Contains(t, got.Error, "mikebom blew up")
+	assert.Contains(t, got.Error, "waybill blew up")
 }
 
+// TestScan_PullErrorMarksFailed pins that a registry-pull failure — which now
+// happens inside the waybill subprocess rather than in the adapter — still lands
+// on the job as Failed with the classified category visible to Harbor.
 func TestScan_PullErrorMarksFailed(t *testing.T) {
 	store := memory.NewStore()
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
 
-	ctrl := NewController(store, &fakePuller{err: errors.New("401 unauthorized")}, &fakeWrapper{},
-		harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "v"}, t.TempDir())
+	pullErr := &waybill.Error{
+		Category: waybill.CategoryPullAuth,
+		Detail:   "waybill exit 1 scanning core:8080/library/alpine@sha256:deadbeef: registry returned 401",
+		ExitCode: 1,
+	}
+	ctrl := NewController(store, &fakeWrapper{err: pullErr},
+		harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "v"}, t.TempDir())
 	req := &harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "https://core.harbor.domain", Authorization: basicHeader("u", "p")},
 		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
@@ -168,7 +171,8 @@ func TestScan_PullErrorMarksFailed(t *testing.T) {
 	got, err := store.Get(context.Background(), key)
 	require.NoError(t, err)
 	assert.Equal(t, job.Failed, got.Status)
-	assert.Contains(t, got.Error, "401 unauthorized")
+	assert.Contains(t, got.Error, string(waybill.CategoryPullAuth))
+	assert.Contains(t, got.Error, "401")
 }
 
 // TestScan_FailedWriteSurvivesExpiredContext proves the Failed status write is not
@@ -181,8 +185,8 @@ func TestScan_FailedWriteSurvivesExpiredContext(t *testing.T) {
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
 
-	ctrl := NewController(store, &fakePuller{}, &fakeWrapper{},
-		harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "v"}, t.TempDir())
+	ctrl := NewController(store, &fakeWrapper{},
+		harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "v"}, t.TempDir())
 	req := &harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "https://core.harbor.domain"},
 		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
@@ -201,19 +205,19 @@ func TestScan_FailedWriteSurvivesExpiredContext(t *testing.T) {
 
 // TestScan_FinishedWriteSurvivesDeadlineDuringScan proves the terminal report and
 // Finished writes are detached too: a scan that completes just as the deadline
-// fires (here, canceled during the pull) must still be recorded as Finished.
+// fires (here, canceled during the waybill run) must still be recorded as Finished.
 func TestScan_FinishedWriteSurvivesDeadlineDuringScan(t *testing.T) {
 	store := ctxStore{Store: memory.NewStore()}
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel the job context while the pull is in flight (after the Pending write,
+	// Cancel the job context while the scan is in flight (after the Pending write,
 	// before the terminal writes). Only the detached terminal writes survive this.
-	puller := &fakePuller{onCall: cancel}
 	spdx := json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)
-	ctrl := NewController(store, puller, &fakeWrapper{sbom: spdx},
-		harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "v"}, t.TempDir())
+	wrapper := &fakeWrapper{sbom: spdx, onCall: cancel}
+	ctrl := NewController(store, wrapper,
+		harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "v"}, t.TempDir())
 	req := &harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "https://core.harbor.domain"},
 		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
@@ -227,20 +231,42 @@ func TestScan_FinishedWriteSurvivesDeadlineDuringScan(t *testing.T) {
 	require.NotNil(t, got.Report)
 }
 
+// TestScan_JobDirRemoved pins that the per-job workdir handed to waybill (its
+// HOME/TMPDIR, and therefore where its layer scratch and blob cache land) does not
+// outlive the job.
+func TestScan_JobDirRemoved(t *testing.T) {
+	store := memory.NewStore()
+	key := newJobKey()
+	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
+
+	workDir := t.TempDir()
+	wrapper := &fakeWrapper{sbom: json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)}
+	ctrl := NewController(store, wrapper, harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "v"}, workDir)
+	req := &harbor.ScanRequest{
+		Registry: harbor.Registry{URL: "https://core.harbor.domain"},
+		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
+	}
+	require.NoError(t, ctrl.Scan(context.Background(), key, req))
+
+	require.NotEmpty(t, wrapper.jobDir)
+	assert.NoDirExists(t, wrapper.jobDir)
+}
+
 func TestApplyAuth(t *testing.T) {
 	t.Run("empty is anonymous", func(t *testing.T) {
-		var ref registry.ImageRef
-		require.NoError(t, applyAuth(&ref, ""))
-		assert.True(t, ref.Anonymous)
+		var target waybill.ScanTarget
+		require.NoError(t, applyAuth(&target, ""))
+		assert.Empty(t, target.Username)
+		assert.Empty(t, target.Password)
 	})
 	t.Run("basic decodes with colon password", func(t *testing.T) {
-		var ref registry.ImageRef
-		require.NoError(t, applyAuth(&ref, basicHeader("robot$x", "a:b:c")))
-		assert.Equal(t, "robot$x", ref.Username)
-		assert.Equal(t, "a:b:c", ref.Password)
+		var target waybill.ScanTarget
+		require.NoError(t, applyAuth(&target, basicHeader("robot$x", "a:b:c")))
+		assert.Equal(t, "robot$x", target.Username)
+		assert.Equal(t, "a:b:c", target.Password)
 	})
 	t.Run("bearer rejected", func(t *testing.T) {
-		var ref registry.ImageRef
-		require.Error(t, applyAuth(&ref, "Bearer sometoken"))
+		var target waybill.ScanTarget
+		require.Error(t, applyAuth(&target, "Bearer sometoken"))
 	})
 }

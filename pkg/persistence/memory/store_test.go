@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
 )
 
 func key() job.ScanJobKey {

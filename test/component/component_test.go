@@ -2,7 +2,7 @@
 
 // Package component is the component-tier test (plan M4, 04-architect-delivery.md
 // section 1.4). It stands up registry:2 (htpasswd, plain HTTP) + redis + the REAL
-// adapter image (which contains the real mikebom binary) via docker compose, then
+// adapter image (which contains the real waybill binary) via docker compose, then
 // plays Harbor's client against the adapter: push an image, POST /api/v1/scan with a
 // Basic authorization header, poll GET /scan/{id}/report asserting a 302+Refresh-After
 // then a 200, and validate the report envelope and the embedded SPDX 2.3 document.
@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	composeProject  = "mikebom-component"
+	composeProject  = "waybill-component"
 	adapterBaseURL  = "http://localhost:8099"
 	registryHost    = "localhost:5099"
 	registryRepo    = "component/alpine"
@@ -169,7 +169,7 @@ func pushFixtureImage() error {
 	if err := crane.Save(img, dst, fixtureTarball); err != nil {
 		return fmt.Errorf("saving tarball: %w", err)
 	}
-	// The VEX probe runs mikebom as uid 65532 against this dir (bind-mounted); make
+	// The VEX probe runs waybill as uid 65532 against this dir (bind-mounted); make
 	// it world-writable so the nonroot process can write its outputs.
 	_ = os.Chmod(dir, 0o777)
 	return nil
@@ -302,7 +302,7 @@ func TestScanHappyPath_302then200_EnvelopeAndSPDX(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &envelope))
 	assert.Equal(t, sbomMediaType, envelope.MediaType, "envelope media_type must be application/spdx+json")
 	assert.False(t, envelope.GeneratedAt.IsZero(), "envelope must carry generated_at")
-	assert.Equal(t, "mikebom", envelope.Scanner["name"])
+	assert.Equal(t, "waybill", envelope.Scanner["name"])
 	require.NotNil(t, envelope.SBOM, "envelope.sbom must be a JSON object")
 
 	assert.Equal(t, "SPDX-2.3", envelope.SBOM["spdxVersion"], "embedded SPDX must be 2.3")
@@ -315,7 +315,7 @@ func TestScanHappyPath_302then200_EnvelopeAndSPDX(t *testing.T) {
 
 	// This whole happy path ran under the enrichment-egress blackhole (extra_hosts
 	// -> 192.0.2.1). Completing within the fast budget proves the --offline flag
-	// prevents mikebom from stalling on deps.dev / clearlydefined.io.
+	// prevents waybill from stalling on deps.dev / clearlydefined.io.
 	t.Logf("scan completed with enrichment egress blackholed (api.deps.dev / api.clearlydefined.io -> 192.0.2.1)")
 }
 
@@ -377,9 +377,9 @@ func TestScanFailureNonexistentDigest(t *testing.T) {
 }
 
 // TestReadOnlyRootFilesystem asserts the adapter container runs with a read-only
-// root filesystem (D-6). Combined with the mikebom child env pinning HOME/TMPDIR and
+// root filesystem (D-6). Combined with the waybill child env pinning HOME/TMPDIR and
 // the openvex output into the writable per-job workdir, this proves any sidecar
-// mikebom might write is confined to the workdir (nothing else is writable).
+// waybill might write is confined to the workdir (nothing else is writable).
 func TestReadOnlyRootFilesystem(t *testing.T) {
 	cid := adapterContainerID(t)
 	out, err := exec.Command("docker", "inspect", "--format", "{{.HostConfig.ReadonlyRootfs}}", cid).CombinedOutput()
@@ -406,18 +406,18 @@ func adapterContainerID(t *testing.T) string {
 }
 
 // TestVEXSidecarPinnedToWorkdirAndDiscarded exercises the openvex-sidecar handling
-// with the REAL mikebom binary from the adapter image, using the exact --output
+// with the REAL waybill binary from the adapter image, using the exact --output
 // openvex=<workdir>/... flag the wrapper passes, plus a supplement fixture that
 // declares a vulnerability.
 //
-// Verified fact (docs/spike-m1.md Task 4, re-confirmed from source): mikebom
+// Verified fact (docs/spike-m1.md Task 4, re-confirmed from source): waybill
 // v0.1.0-alpha.55 never populates ResolvedComponent.advisories in ANY production
 // path (every path sets advisories: vec![], including the supplement merge, which
 // ignores the CDX vulnerabilities surface). So the openvex emitter is scaffolding
 // that fires a no-op for every present-day scan; no CLI input can make it write a
 // sidecar. The property that matters is therefore proven directly:
 //   - PINNED: the openvex output path is directed into the per-job workdir, and the
-//     default-name sidecar (mikebom.openvex.json) never lands in CWD/HOME.
+//     default-name sidecar (waybill.openvex.json) never lands in CWD/HOME.
 //   - DISCARDED: the adapter's report envelope carries only .sbom (no vex/openvex
 //     key), and the whole workdir is read-only-confined and swept after the job.
 func TestVEXSidecarPinnedToWorkdirAndDiscarded(t *testing.T) {
@@ -431,12 +431,12 @@ func TestVEXSidecarPinnedToWorkdirAndDiscarded(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(workdir, "supp.cdx.json"), suppBytes, 0o644))
 
-	// Run mikebom exactly as the wrapper does: --offline is the global egress flag,
+	// Run waybill exactly as the wrapper does: --offline is the global egress flag,
 	// openvex output pinned into the (mounted) workdir alongside the SPDX output.
 	args := []string{
 		"run", "--rm",
-		"--entrypoint", "/usr/local/bin/mikebom",
-		"-e", "HOME=/vex", "-e", "TMPDIR=/vex", "-e", "MIKEBOM_OFFLINE=1",
+		"--entrypoint", "/usr/local/bin/waybill",
+		"-e", "HOME=/vex", "-e", "TMPDIR=/vex", "-e", "WAYBILL_OFFLINE=1",
 		"-v", workdir + ":/vex",
 		adapterImage,
 		"--offline", "sbom", "scan",
@@ -448,19 +448,19 @@ func TestVEXSidecarPinnedToWorkdirAndDiscarded(t *testing.T) {
 		"--no-oci-cache",
 	}
 	out, err := exec.Command("docker", args...).CombinedOutput()
-	require.NoError(t, err, "mikebom run failed: %s", string(out))
+	require.NoError(t, err, "waybill run failed: %s", string(out))
 
 	// PINNED: the SPDX output landed exactly where the flag directed it.
 	assert.FileExists(t, filepath.Join(workdir, "out.spdx.json"), "SPDX output must be pinned to the workdir path")
 	// The default-name openvex sidecar must never appear anywhere in the workdir
 	// (proves --output openvex=<workdir>/... retargets it; nothing leaks to CWD).
-	assert.NoFileExists(t, filepath.Join(workdir, "mikebom.openvex.json"), "default-name sidecar must not be written to CWD")
-	// Present-day mikebom emits no sidecar (scaffolding no-op); there is nothing to
+	assert.NoFileExists(t, filepath.Join(workdir, "waybill.openvex.json"), "default-name sidecar must not be written to CWD")
+	// Present-day waybill emits no sidecar (scaffolding no-op); there is nothing to
 	// discard, and had it emitted one it would be inside the workdir path above.
 	if _, statErr := os.Stat(filepath.Join(workdir, "out.vex.json")); statErr == nil {
 		t.Logf("openvex sidecar was emitted at the pinned workdir path (would be discarded by the adapter)")
 	} else {
-		t.Logf("mikebom emitted no openvex sidecar (scaffolding no-op, confirmed); pinned path honored, nothing to leak")
+		t.Logf("waybill emitted no openvex sidecar (scaffolding no-op, confirmed); pinned path honored, nothing to leak")
 	}
 
 	// DISCARDED: a full adapter scan's report envelope surfaces only .sbom to Harbor.

@@ -1,7 +1,7 @@
-// Command scanner-mikebom is the Harbor Pluggable Scanner Adapter that wraps the
-// mikebom SBOM CLI. It serves the Scanner Adapter API v1: the adapter pulls the
-// artifact itself (go-containerregistry), hands mikebom a docker-save tarball,
-// and returns the SPDX 2.3 document in a Harbor report envelope.
+// Command scanner-waybill is the Harbor Pluggable Scanner Adapter that wraps the
+// waybill SBOM CLI. It serves the Scanner Adapter API v1: waybill pulls the
+// artifact from the Harbor-managed registry and the adapter returns the SPDX 2.3
+// document it produces in a Harbor report envelope.
 package main
 
 import (
@@ -16,18 +16,17 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
-	v1 "github.com/container-registry/mikebom-harbor-adapter/pkg/http/api/v1"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/mikebom"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence/memory"
-	predis "github.com/container-registry/mikebom-harbor-adapter/pkg/persistence/redis"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/queue"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/redisx"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/registry"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/scan"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	v1 "github.com/container-registry/waybill-harbor-adapter/pkg/http/api/v1"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
+	predis "github.com/container-registry/waybill-harbor-adapter/pkg/persistence/redis"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/queue"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/redisx"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/scan"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/waybill"
 )
 
 // Stamped at build time by the Taskfile ldflags.
@@ -38,7 +37,7 @@ var (
 )
 
 const (
-	scannerName   = "mikebom"
+	scannerName   = "waybill"
 	scannerVendor = "Kusari"
 )
 
@@ -46,7 +45,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVersion {
-		fmt.Printf("scanner-mikebom %s (commit %s, built %s)\n", version, commit, date)
+		fmt.Printf("scanner-waybill %s (commit %s, built %s)\n", version, commit, date)
 		return
 	}
 
@@ -66,7 +65,7 @@ type redisPinger struct{ rdb *redis.Client }
 func (p redisPinger) Ping(ctx context.Context) error { return p.rdb.Ping(ctx).Err() }
 
 func run(ctx context.Context, info etc.BuildInfo) error {
-	slog.Info("Starting scanner-mikebom",
+	slog.Info("Starting scanner-waybill",
 		slog.String("version", info.Version),
 		slog.String("commit", info.Commit),
 		slog.String("built_at", info.Date),
@@ -78,25 +77,29 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		return fmt.Errorf("getting config: %w", err)
 	}
 
-	wrapper := mikebom.NewWrapper(config.Mikebom)
+	wrapper := waybill.NewWrapper(config.Waybill)
 
-	// scanner.version is the mikebom CLI version, exec'd once at startup, never
+	// scanner.version is the waybill CLI version, exec'd once at startup, never
 	// from env (plan D-4).
 	versionCtx, cancelVersion := context.WithTimeout(ctx, 15*time.Second)
-	mikebomVersion, err := wrapper.Version(versionCtx)
+	waybillVersion, err := wrapper.Version(versionCtx)
 	cancelVersion()
 	if err != nil {
-		return fmt.Errorf("determining mikebom version: %w", err)
+		return fmt.Errorf("determining waybill version: %w", err)
 	}
-	scanner := harbor.Scanner{Name: scannerName, Vendor: scannerVendor, Version: mikebomVersion}
-	slog.Info("mikebom scanner", slog.String("version", mikebomVersion))
+	scanner := harbor.Scanner{Name: scannerName, Vendor: scannerVendor, Version: waybillVersion}
+	slog.Info("waybill scanner", slog.String("version", waybillVersion))
 
 	var (
 		store  persistence.Store
 		rdb    *redis.Client
 		pinger etc.Pinger
 	)
-	useRedis := config.Store.Backend != "memory"
+	// etc.GetConfig has already normalized and validated Store.Backend, so this
+	// comparison and the checker's Redis ping agree on the same value. Before
+	// normalization a typo or a case variant ("Memory") silently took the Redis
+	// path while skipping the fail-fast connectivity check.
+	useRedis := config.Store.Backend == etc.StoreBackendRedis
 	if useRedis {
 		rdb, err = redisx.NewClient(config.RedisPool)
 		if err != nil {
@@ -111,12 +114,11 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	if err = etc.Check(ctx, config, wrapper, pinger); err != nil {
 		return fmt.Errorf("checking config: %w", err)
 	}
-	if err = etc.SweepStaleWorkDirs(config.Mikebom.WorkDir); err != nil {
+	if err = etc.SweepStaleWorkDirs(config.Waybill.WorkDir); err != nil {
 		slog.Warn("Failed to sweep stale work dirs", slog.String("err", err.Error()))
 	}
 
-	puller := registry.NewPuller()
-	controller := scan.NewController(store, puller, wrapper, scanner, config.Mikebom.WorkDir)
+	controller := scan.NewController(store, wrapper, scanner, config.Waybill.WorkDir)
 	enqueuer := queue.NewEnqueuer(config.JobQueue, rdb, store)
 
 	ready := func(rctx context.Context) error {

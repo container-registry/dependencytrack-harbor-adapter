@@ -1,6 +1,9 @@
-// Package queue is the Redis Pub/Sub job queue (enqueuer + worker) with a SetNX
+// Package queue is the Redis job queue (enqueuer + worker) with a SetNX
 // distributed lock, ported from harbor-scanner-trivy. The lock TTL is derived
 // from the scan timeout rather than a copied constant (plan m5).
+//
+// Transport is a Redis list (RPUSH / BRPOP), not Pub/Sub: see worker.Start for
+// the two ways Pub/Sub silently loses an accepted job.
 package queue
 
 import (
@@ -15,11 +18,11 @@ import (
 	"github.com/samber/lo"
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 )
 
 const scanArtifactJobName = "scan_artifact"
@@ -111,7 +114,10 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 		return xerrors.Errorf("marshaling scan request: %v", err)
 	}
 
-	if err = e.rdb.Publish(ctx, redisJobChannel(e.namespace), b).Err(); err != nil {
+	// RPUSH pairs with the workers' BRPOP for FIFO order. Unlike Publish it does
+	// not need a live subscriber: the entry sits in the list until a worker takes
+	// it, so a job accepted while no worker is listening still runs.
+	if err = e.rdb.RPush(ctx, redisJobList(e.namespace), b).Err(); err != nil {
 		return xerrors.Errorf("enqueuing scan artifact job: %v", err)
 	}
 
@@ -129,6 +135,6 @@ func makeIdentifier() (string, error) {
 	return fmt.Sprintf("%x", b), nil
 }
 
-func redisJobChannel(namespace string) string {
+func redisJobList(namespace string) string {
 	return namespace + ":jobs:" + scanArtifactJobName
 }

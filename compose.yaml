@@ -4,7 +4,7 @@
 # redis://redis:6379, never via a host port mapping).
 #
 # Build args come from versions.env; export them first (the Taskfile `dev:up` task
-# already loads versions.env via dotenv). Run `task build build:lprobe build:mikebom`
+# already loads versions.env via dotenv). Run `task build build:lprobe build:waybill`
 # first: the Dockerfile COPYs those staged binaries out of bin/linux-<arch>/.
 ---
 services:

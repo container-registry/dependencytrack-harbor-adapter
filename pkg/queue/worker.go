@@ -3,15 +3,22 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/scan"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/scan"
 )
+
+// brpopTimeout is how long a worker blocks on BRPOP before looping. It only sets
+// how quickly a worker notices Stop() / ctx cancellation; the queue itself is
+// push-driven, so a longer value costs nothing but responsiveness at shutdown.
+const brpopTimeout = 5 * time.Second
 
 type Worker interface {
 	Start(ctx context.Context)
@@ -25,8 +32,11 @@ type worker struct {
 	// scan timeout (config.LockTTL), not a copied 5m constant (plan m5).
 	lockTTL time.Duration
 
-	rdb    *redis.Client
-	pubsub *redis.PubSub
+	rdb *redis.Client
+
+	stopOnce sync.Once
+	stop     chan struct{}
+	done     sync.WaitGroup
 
 	controller scan.Controller
 }
@@ -37,44 +47,90 @@ func NewWorker(config etc.JobQueue, lockTTL time.Duration, rdb *redis.Client, co
 		concurrency: config.WorkerConcurrency,
 		lockTTL:     lockTTL,
 		rdb:         rdb,
+		stop:        make(chan struct{}),
 		controller:  controller,
 	}
 }
 
+// Start runs `concurrency` consumers, each blocking on its own BRPOP against the
+// shared job list.
+//
+// This is deliberately a Redis list, not Pub/Sub. Pub/Sub drops a job whenever
+// there is no subscriber at publish time (a restart window, or a worker that has
+// not finished subscribing), and go-redis's PubSub.Channel() buffers only 100
+// messages and discards anything it cannot deliver within a minute — while
+// scanArtifact holds the reader loop for the whole scan. In both cases the store
+// record stays Queued and Harbor 302-polls a job no worker will ever pick up,
+// until the TTL expires. A list has neither failure mode: RPUSH persists, and
+// BRPOP hands each entry to exactly one consumer whenever one shows up.
 func (w *worker) Start(ctx context.Context) {
-	w.pubsub = w.rdb.Subscribe(ctx, redisJobChannel(w.namespace))
-	ch := w.pubsub.Channel()
-
 	for i := 0; i < w.concurrency; i++ {
-		go w.subscribe(ctx, ch)
+		w.done.Add(1)
+		go func() {
+			defer w.done.Done()
+			w.consume(ctx)
+		}()
 	}
 }
 
 func (w *worker) Stop() {
 	slog.Debug("Job queue shutdown started")
-	if w.pubsub != nil {
-		_ = w.pubsub.Close()
-	}
+	w.stopOnce.Do(func() { close(w.stop) })
+	w.done.Wait()
 	slog.Debug("Job queue shutdown completed")
 }
 
-func (w *worker) subscribe(ctx context.Context, ch <-chan *redis.Message) {
-	for msg := range ch {
-		chLog := slog.With(slog.String("channel", msg.Channel))
-		chLog.Debug("Message subscribed")
-		if err := w.scanArtifact(ctx, msg); err != nil {
-			chLog.Error("Failed to scan artifact", slog.String("err", err.Error()))
+func (w *worker) consume(ctx context.Context) {
+	key := redisJobList(w.namespace)
+	for {
+		select {
+		case <-w.stop:
+			return
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		res, err := w.rdb.BRPop(ctx, brpopTimeout, key).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				continue // BRPOP timed out with an empty list: normal idle.
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			// Redis unreachable or the command failed. Back off for one poll
+			// interval rather than spinning on the error.
+			slog.Error("Failed to dequeue scan job", slog.String("err", err.Error()))
+			select {
+			case <-w.stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-time.After(brpopTimeout):
+			}
 			continue
+		}
+		// BRPOP returns [key, value].
+		if len(res) != 2 {
+			slog.Error("Unexpected BRPOP response", slog.Int("len", len(res)))
+			continue
+		}
+		if err := w.scanArtifact(ctx, res[1]); err != nil {
+			slog.Error("Failed to scan artifact", slog.String("err", err.Error()))
 		}
 	}
 }
 
-func (w *worker) scanArtifact(ctx context.Context, msg *redis.Message) error {
+func (w *worker) scanArtifact(ctx context.Context, payload string) error {
 	var j Job
-	if err := json.Unmarshal([]byte(msg.Payload), &j); err != nil {
+	if err := json.Unmarshal([]byte(payload), &j); err != nil {
 		return xerrors.Errorf("unmarshaling scan request: %w", err)
 	}
 
+	// The lock is no longer what keeps two workers off one job — BRPOP already
+	// delivers each entry once. It stays as the guard against a duplicate
+	// enqueue of the same job key landing on two workers concurrently.
 	nx, err := w.rdb.SetNX(ctx, redisLockKey(w.namespace, j.ID()), "", w.lockTTL).Result()
 	if err != nil {
 		return xerrors.Errorf("redis lock: %w", err)
@@ -87,14 +143,14 @@ func (w *worker) scanArtifact(ctx context.Context, msg *redis.Message) error {
 	return w.runJob(ctx, j)
 }
 
-// runJob bounds the whole job (registry pull + mikebom scan) by a deadline. Start
-// receives context.Background() from main, and controller.Scan -> puller.PullToTarball
-// had no timeout on the pull path: go-containerregistry's default transport sets only
-// dial/TLS timeouts, so a tarpit or half-open registry could trickle bytes and block
-// the pull forever, permanently consuming this worker goroutine (default concurrency
-// 1 => all scanning halts until process restart, job stuck Pending until the 1h TTL).
-// The deadline is the lock TTL: the job may run for as long as the lock protects it,
-// and no longer. crane honors the ctx via crane.WithContext, so the pull is now bounded.
+// runJob bounds the whole job (waybill's registry pull plus its scan) by a
+// deadline. Start receives context.Background() from main, so without this the
+// job would be unbounded: a tarpit or half-open registry can trickle bytes for
+// as long as it likes, permanently consuming this worker goroutine (default
+// concurrency 1 => all scanning halts until process restart, job stuck Pending
+// until the 1h TTL). The deadline is the lock TTL: the job may run for as long as
+// the lock protects it, and no longer. The context reaches the waybill subprocess
+// through exec.CommandContext, which kills it when the deadline fires.
 func (w *worker) runJob(ctx context.Context, j Job) error {
 	jobCtx, cancel := context.WithTimeout(ctx, w.lockTTL)
 	defer cancel()
@@ -102,5 +158,5 @@ func (w *worker) runJob(ctx context.Context, j Job) error {
 }
 
 func redisLockKey(namespace, jobID string) string {
-	return redisJobChannel(namespace) + ":lock:" + jobID
+	return redisJobList(namespace) + ":lock:" + jobID
 }

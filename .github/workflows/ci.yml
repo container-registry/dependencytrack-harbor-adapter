@@ -1,7 +1,7 @@
 # CI gates for pull requests and pushes to main, plus a weekly vuln-check sweep.
 #
-# The component job builds the REAL adapter image (which bundles the real mikebom
-# binary) and runs `task test:component` against it. mikebom is fetched from its
+# The component job builds the REAL adapter image (which bundles the real waybill
+# binary) and runs `task test:component` against it. waybill is fetched from its
 # public, checksum-verified release tarball, so no registry credentials are needed.
 ---
 name: CI
@@ -62,13 +62,12 @@ jobs:
     name: Component Tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    # Surface the secret as env so the login step's `if:` can gate on it: the
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      # No registry login: `task build:mikebom` fetches the mikebom CLI from its
+      # No registry login: `task build:waybill` fetches the waybill CLI from its
       # public, checksum-verified release tarball (versions.env).
       - name: Run component tests against the real adapter image
         run: task test:component

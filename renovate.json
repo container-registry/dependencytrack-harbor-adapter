@@ -9,11 +9,11 @@
   "labels": ["dependencies"],
   "customManagers": [
     {
-      "description": "versions.env: mikebom CLI release tag",
+      "description": "versions.env: waybill CLI release tag",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.env$/"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>github-releases) depName=(?<depName>\\S+)\\s+MIKEBOM_CLI_VERSION=(?<currentValue>\\S+)"
+        "# renovate: datasource=(?<datasource>github-releases) depName=(?<depName>\\S+)\\s+WAYBILL_CLI_VERSION=(?<currentValue>\\S+)"
       ]
     },
     {
@@ -35,12 +35,12 @@
   ],
   "packageRules": [
     {
-      "description": "A mikebom pin bump is a runtime behavior change; release it as a patch (fix).",
+      "description": "A waybill pin bump is a runtime behavior change; release it as a patch (fix).",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/kusari-oss/mikebom"],
+      "matchPackageNames": ["ghcr.io/kusari-oss/waybill"],
       "semanticCommitType": "fix",
-      "commitMessageTopic": "mikebom",
-      "addLabels": ["mikebom"]
+      "commitMessageTopic": "waybill",
+      "addLabels": ["waybill"]
     },
     {
       "description": "Base image / tooling / CI action bumps are chores.",

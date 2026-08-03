@@ -10,9 +10,9 @@ import (
 	redis "github.com/redis/go-redis/v9"
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 )
 
 type store struct {
@@ -47,8 +47,16 @@ func (s *store) update(ctx context.Context, scanJob job.ScanJob) error {
 		return xerrors.Errorf("marshaling scan job: %w", err)
 	}
 	key := s.keyForScanJob(scanJob.Key)
-	if err = s.rdb.SetXX(ctx, key, string(bytes), s.cfg.ScanJobTTL).Err(); err != nil {
+	// SetXX reports whether the key was actually there to update. Checking only
+	// Err() would treat "the key expired between the Get and this write" as
+	// success and silently drop the update — the exact race ScanJobTTL makes
+	// likely for a long scan.
+	updated, err := s.rdb.SetXX(ctx, key, string(bytes), s.cfg.ScanJobTTL).Result()
+	if err != nil {
 		return xerrors.Errorf("updating scan job: %w", err)
+	}
+	if !updated {
+		return xerrors.Errorf("updating scan job (%s): key missing or expired", scanJob.Key.String())
 	}
 	return nil
 }

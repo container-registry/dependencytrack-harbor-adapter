@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
 )
 
 type Store interface {

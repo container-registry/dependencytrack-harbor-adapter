@@ -1,12 +1,12 @@
-# Integrating mikebom-harbor-adapter with Harbor
+# Integrating waybill-harbor-adapter with Harbor
 
 This adapter implements the Harbor Pluggable Scanner Adapter API v1. It wraps the
-[mikebom](https://github.com/kusari-oss/mikebom) SBOM CLI and advertises exactly one
+[waybill](https://github.com/kusari-oss/waybill) SBOM CLI and advertises exactly one
 capability: **`sbom`**.
 
 ## READ THIS FIRST: this scanner has NO vulnerability capability
 
-mikebom generates SBOMs. It does **not** detect vulnerabilities. This adapter therefore
+waybill generates SBOMs. It does **not** detect vulnerabilities. This adapter therefore
 advertises only the `sbom` capability and **rejects vulnerability scan requests with HTTP
 422** (`pkg/http/api/v1/handler.go`).
 
@@ -30,8 +30,8 @@ Consequences you must plan for:
 - Produces: `application/vnd.security.sbom.report+json; version=1.0`
 - `sbom_media_types: ["application/spdx+json"]` (Harbor core hardcodes SPDX; no CycloneDX)
 - `properties["harbor.scanner-adapter/registry-authorization-type"] = "Basic"`
-- The adapter's own version is in `properties["org.label-schema.version"]`. The mikebom
-  CLI version is reported in `scanner.version` (exec'd from `mikebom --version` at startup).
+- The adapter's own version is in `properties["org.label-schema.version"]`. The waybill
+  CLI version is reported in `scanner.version` (exec'd from `waybill --version` at startup).
 
 ## Registering the scanner
 
@@ -43,9 +43,9 @@ curl -sSf -X POST "https://<harbor-host>/api/v2.0/scanners" \
   -H "Content-Type: application/json" \
   -u "<admin-user>:<admin-pass>" \
   -d '{
-    "name": "mikebom",
-    "description": "mikebom SBOM generator (no vulnerability scanning)",
-    "url": "http://mikebom-adapter:8080",
+    "name": "waybill",
+    "description": "waybill SBOM generator (no vulnerability scanning)",
+    "url": "http://waybill-adapter:8080",
     "disabled": false,
     "use_internal_addr": true
   }'
@@ -54,7 +54,7 @@ curl -sSf -X POST "https://<harbor-host>/api/v2.0/scanners" \
 Notes:
 
 - `url` is the in-cluster / in-network address of the adapter. On the Harbor devenv this
-  is the compose service name (e.g. `http://mikebom-adapter:8080`); in Kubernetes it is
+  is the compose service name (e.g. `http://waybill-adapter:8080`); in Kubernetes it is
   the Service DNS name.
 - If the adapter is protected with `SCANNER_API_AUTH_API_KEY`, register with an
   `Authorization` header instead (`"auth": "Bearer", "access_credential": "<key>"` per
@@ -62,7 +62,7 @@ Notes:
 - Do **not** set this scanner as the project/system default if that would remove a
   vulnerability scanner from the default slot.
 
-Bind it to a project (Harbor UI: Project -> Scanner -> select `mikebom`), or via the API.
+Bind it to a project (Harbor UI: Project -> Scanner -> select `waybill`), or via the API.
 
 ## Triggering an SBOM scan
 
@@ -83,11 +83,11 @@ the resulting SPDX document as an `sbom.harbor` accessory. Download it via the a
 
 The adapter pulls the image itself with go-containerregistry, using the Basic credentials
 from the scan request (anonymous when empty), writes a docker-save tarball, and runs
-mikebom against the tarball (`--image <tarball>`). It does this because mikebom's own OCI
+waybill against the tarball (`--image <tarball>`). It does this because waybill's own OCI
 client cannot pull from plain-HTTP or private-CA registries (plan D-1). `registry.url`
 with an `http://` scheme is treated as insecure automatically, which is why
 `use_internal_addr: true` works against the Harbor devenv's `http://core:8080`.
 
-mikebom runs with `--offline`: it never makes outbound enrichment calls (deps.dev,
-ClearlyDefined). See `docs/spike-m1.md` for why the flag, not the `MIKEBOM_OFFLINE` env
+waybill runs with `--offline`: it never makes outbound enrichment calls (deps.dev,
+ClearlyDefined). See `docs/spike-m1.md` for why the flag, not the `WAYBILL_OFFLINE` env
 var, is the real egress control.

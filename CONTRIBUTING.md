@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving mikebom-harbor-adapter.
+Thanks for your interest in improving waybill-harbor-adapter.
 
 ## Development workflow
 
@@ -32,7 +32,7 @@ Releases are automated by [release-please](https://github.com/googleapis/release
   tags the release and triggers the image publish.
 - **`exclude-paths` gotcha:** commits touching only `.github/` or `docs/` do not
   bump the version, even as `feat:`/`fix:`. Use `ci:`/`docs:` types there.
-- A mikebom pin bump (`versions.env`) ships as `fix:` so it releases as a patch.
+- A waybill pin bump (`versions.env`) ships as `fix:` so it releases as a patch.
 
 ## Security
 

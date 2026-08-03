@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Versioner is satisfied by the mikebom wrapper; the checker uses it to prove the
+// Versioner is satisfied by the waybill wrapper; the checker uses it to prove the
 // binary is exec-able at startup.
 type Versioner interface {
 	Version(ctx context.Context) (string, error)
@@ -22,7 +22,7 @@ type Pinger interface {
 }
 
 // Check fails fast on an unusable environment: work dir must be writable, the
-// mikebom binary must be exec-able (captures its version once), and Redis must be
+// waybill binary must be exec-able (captures its version once), and Redis must be
 // reachable when the store backend is redis.
 func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinger) error {
 	slog.Debug("Current process", slog.Int("pid", os.Getpid()))
@@ -32,19 +32,32 @@ func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinge
 		slog.String("home_dir", os.Getenv("HOME")),
 	)
 
-	if config.Mikebom.WorkDir == "" {
-		return fmt.Errorf("mikebom work dir must not be blank")
+	if config.Waybill.WorkDir == "" {
+		return fmt.Errorf("waybill work dir must not be blank")
 	}
-	if err := ensureDirWritable(config.Mikebom.WorkDir); err != nil {
+	if err := ensureDirWritable(config.Waybill.WorkDir); err != nil {
 		return fmt.Errorf("work dir not usable: %w", err)
+	}
+
+	// waybill itself fails fast on an unreadable --registry-ca-cert, but only once
+	// a scan is already in flight: the failure would surface as a failed Harbor
+	// scan rather than as a broken deployment. Check the paths at startup instead.
+	for _, path := range config.Waybill.RegistryCACerts {
+		if !fileExists(path) {
+			return fmt.Errorf("registry CA certificate file does not exist: %s", path)
+		}
+	}
+	if config.Waybill.InsecureSkipVerify {
+		slog.Warn("TLS verification is DISABLED for registry pulls (SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY); " +
+			"use SCANNER_WAYBILL_REGISTRY_CA_CERTS in production")
 	}
 
 	if versioner != nil {
 		version, err := versioner.Version(ctx)
 		if err != nil {
-			return fmt.Errorf("mikebom binary not exec-able (%s): %w", config.Mikebom.Binary, err)
+			return fmt.Errorf("waybill binary not exec-able (%s): %w", config.Waybill.Binary, err)
 		}
-		slog.Info("mikebom binary is exec-able", slog.String("version", version))
+		slog.Info("waybill binary is exec-able", slog.String("version", version))
 	}
 
 	if config.API.IsTLSEnabled() {
@@ -61,7 +74,7 @@ func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinge
 		}
 	}
 
-	if strings.EqualFold(config.Store.Backend, "redis") && pinger != nil {
+	if config.Store.Backend == StoreBackendRedis && pinger != nil {
 		if err := pinger.Ping(ctx); err != nil {
 			return fmt.Errorf("redis not reachable: %w", err)
 		}

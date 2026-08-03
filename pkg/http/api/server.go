@@ -9,8 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
 )
 
 type Server struct {
@@ -85,9 +86,18 @@ func (s *Server) listenAndServe() error {
 	return s.server.ListenAndServe()
 }
 
+// shutdownTimeout bounds the graceful drain. http.Server.Shutdown blocks until
+// every connection goes idle, so an unbounded context lets one stalled client
+// hold the process open — and the signal handler runs Shutdown before stopping
+// the worker and closing Redis, so those never get to run either. The container
+// would then sit there until the orchestrator escalates to SIGKILL.
+const shutdownTimeout = 10 * time.Second
+
 func (s *Server) Shutdown() {
 	slog.Debug("API server shutdown started")
-	if err := s.server.Shutdown(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := s.server.Shutdown(ctx); err != nil {
 		slog.Error("Error while shutting down API server", slog.String("err", err.Error()))
 	}
 	slog.Debug("API server shutdown completed")

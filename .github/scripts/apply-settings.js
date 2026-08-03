@@ -86,15 +86,32 @@ module.exports = async ({ github, context, core }) => {
     core.info('✓ environments')
   }
 
-  // Apply all settings with error handling
+  // Apply all settings, collecting failures rather than swallowing them. An apply
+  // run is deliberate, so a missing SETTINGS_TOKEN or a permission error has to
+  // fail the step: warnings alone render a green check on a run that changed
+  // nothing. Every section is still attempted so one failure does not hide the rest.
   async function applyAll() {
-    await applyRepository().catch(e => core.warning(`repository: ${e.message} (needs SETTINGS_TOKEN?)`))
-    await applyLabels().catch(e => core.warning(`labels: ${e.message}`))
-    await applySecurity().catch(e => core.warning(`security: ${e.message} (needs SETTINGS_TOKEN?)`))
-    await applyCodeScanning().catch(e => core.warning(`code_scanning: ${e.message}`))
-    await applyRulesets().catch(e => core.warning(`rulesets: ${e.message} (needs SETTINGS_TOKEN?)`))
-    await applyBranches().catch(e => core.warning(`branches: ${e.message} (needs SETTINGS_TOKEN?)`))
-    await applyEnvironments().catch(e => core.warning(`environments: ${e.message} (needs SETTINGS_TOKEN?)`))
+    const sections = [
+      ['repository', applyRepository],
+      ['labels', applyLabels],
+      ['security', applySecurity],
+      ['code_scanning', applyCodeScanning],
+      ['rulesets', applyRulesets],
+      ['branches', applyBranches],
+      ['environments', applyEnvironments],
+    ]
+    const failures = []
+    for (const [name, fn] of sections) {
+      try {
+        await fn()
+      } catch (e) {
+        core.warning(`${name}: ${e.message} (needs SETTINGS_TOKEN?)`)
+        failures.push(name)
+      }
+    }
+    if (failures.length) {
+      throw new Error(`failed to apply: ${failures.join(', ')} (see warnings above; a PAT in SETTINGS_TOKEN is required for repository, security, rulesets, branches and environments)`)
+    }
   }
 
   // Export current settings from GitHub

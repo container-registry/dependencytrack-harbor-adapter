@@ -14,7 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
 )
 
 // NewClient constructs a redis.Client from the configured URL.

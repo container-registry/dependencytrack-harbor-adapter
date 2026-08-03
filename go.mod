@@ -1,4 +1,4 @@
-module github.com/container-registry/mikebom-harbor-adapter
+module github.com/container-registry/waybill-harbor-adapter
 
 go 1.26
 
@@ -6,6 +6,7 @@ go 1.26
 toolchain go1.26.5
 
 require (
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/caarlos0/env/v6 v6.10.1
 	github.com/google/go-containerregistry v0.21.6
 	github.com/gorilla/mux v1.8.1
@@ -33,6 +34,7 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/sync v0.20.0 // indirect

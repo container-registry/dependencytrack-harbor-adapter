@@ -10,7 +10,7 @@
 #      Egress is therefore blackholed at the enrichment endpoints (extra_hosts ->
 #      RFC5737 TEST-NET-1 192.0.2.1, an unroutable address a connect() hangs on,
 #      simulating the production NetworkPolicy drop). A scan still completes because
-#      the wrapper passes --offline; if --offline regressed, mikebom would try
+#      the wrapper passes --offline; if --offline regressed, waybill would try
 #      api.deps.dev / api.clearlydefined.io, hit the blackhole, and stall.
 ---
 services:
@@ -48,8 +48,8 @@ services:
       SCANNER_REDIS_URL: redis://redis:6379
       # Bounded scan timeout keeps the failure/latency assertions fast and derives a
       # short worker/lock deadline (LockTTL = timeout + 30s).
-      SCANNER_MIKEBOM_TIMEOUT: 90s
-    # Egress blackhole: mikebom's three enrichment sources both live on these two
+      SCANNER_WAYBILL_TIMEOUT: 90s
+    # Egress blackhole: waybill's three enrichment sources both live on these two
     # hosts (api.deps.dev, api.clearlydefined.io). 192.0.2.1 is RFC5737 unroutable.
     extra_hosts:
       - "api.deps.dev:192.0.2.1"

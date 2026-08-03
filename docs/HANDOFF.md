@@ -1,11 +1,11 @@
-# Implementation Handoff — mikebom-harbor-adapter
+# Implementation Handoff — waybill-harbor-adapter
 
 Prepared by the release-engineering agent. This is the state-of-the-branch record for
 the owner who will publish the repo, cut the release, and deploy to demo.goharbor.io.
 
 Every claim here was verified against the working tree, `git`, and the actual gate
 commands on 2026-07-09. Where a claim is a design decision it cites the plan of record
-(`.claude/plans/mikebom-harbor-adapter.md`).
+(`.claude/plans/waybill-harbor-adapter.md`).
 
 ## READ THIS FIRST — acceptance status and why the PR should open as a draft
 
@@ -14,7 +14,7 @@ HALTED at acceptance after 3 attempts** over blockers that are *not* inside this
 that a HARD RULE forbids this agent from fixing (do not modify `../harbor` or
 `../dedicated-container-registry`). Open the PR as a **draft** until the owner clears them.
 
-Outstanding M7 blockers (all outside this repo, none reference mikebom):
+Outstanding M7 blockers (all outside this repo, none reference waybill):
 
 1. **`../harbor` working tree is not clean**, and the M7 gate literally requires
    `git -C ../harbor status --porcelain` to be empty. Verified now:
@@ -22,7 +22,7 @@ Outstanding M7 blockers (all outside this repo, none reference mikebom):
     M versions.env                                  # DELVE_VERSION v1.25.1 -> v1.27.0
    ?? src/server/registry/silent201_repro_test.go   # repro for goharbor PR #23375
    ```
-   `grep -il mikebom` over both files returns nothing (exit 1): the delve bump is a Go
+   `grep -il waybill` over both files returns nothing (exit 1): the delve bump is a Go
    debugger pin and the test file's own header says *"This file is temporary and not meant
    to be committed"* (goharbor PR #23375, dated Jul 2). Neither is M7 output. Owner fix:
    `git -C ../harbor checkout -- versions.env && rm ../harbor/src/server/registry/silent201_repro_test.go`
@@ -50,7 +50,7 @@ Outstanding M7 blockers (all outside this repo, none reference mikebom):
    `GET /api/v2.0/scanners/{uuid}/metadata` once (it re-pings the adapter) before rerunning,
    or add a poll-with-retry around line 107. This does not invalidate the produced SBOMs.
 
-`../mikebom` is clean. **This repo's own working tree is clean** (`git status --porcelain`
+`../waybill` is clean. **This repo's own working tree is clean** (`git status --porcelain`
 empty). The blockers are entirely in sibling repos the owner controls.
 
 ## a. What exists now, per milestone (with commit hashes)
@@ -69,27 +69,27 @@ ff66b06 feat(adapter): implement scanner adapter service (M3)
 (`main` is a single empty `chore: initial commit` `ff3248b`; the six above are the branch.)
 
 - **M1 — `2f2552f` — Decision spike + upstream filing.** `docs/spike-m1.md`,
-  `docs/upstream-issues.md`. Proves valid SPDX 2.3 out of mikebom fed a docker-save
-  tarball; records the mikebom pin (`v0.1.0-alpha.55`, digest
+  `docs/upstream-issues.md`. Proves valid SPDX 2.3 out of waybill fed a docker-save
+  tarball; records the waybill pin (`v0.1.0-alpha.55`, digest
   `sha256:806521fba9319865d1b2f443e498f75a3a34878aaf2bda276356079be8ae2746`); measured SBOM
   sizes (golang:1.23 = 1,325 packages, 5,507,501 raw bytes, 1,054,388 gzip -9, 5.2x) that
-  feed the gzip/Redis sizing decisions; files the three upstream mikebom v2 remote-pull
+  feed the gzip/Redis sizing decisions; files the three upstream waybill v2 remote-pull
   enablers (insecure-registry, custom CA, Bearer). **Root-cause correction captured here:**
-  `MIKEBOM_OFFLINE=1` does *not* disable enrichment egress; only the `--offline` argv flag
+  `WAYBILL_OFFLINE=1` does *not* disable enrichment egress; only the `--offline` argv flag
   does — the wrapper passes `--offline`.
 
 - **M2 — `4093e67` — Repo scaffold + build tooling.** LICENSE, NOTICE, README,
   CONTRIBUTING, SECURITY, CODE_OF_CONDUCT; `go.mod`
-  (`github.com/container-registry/mikebom-harbor-adapter`); `.golangci.yaml`, `.yamllint`,
+  (`github.com/container-registry/waybill-harbor-adapter`); `.golangci.yaml`, `.yamllint`,
   `.typos.toml`, `lefthook.yml`; `versions.env` (D-5 pins, no GO_VERSION);
   `Taskfile.yml` (git-describe versioning, D-9 task names); `Dockerfile` (multi-stage,
-  distroless `cc-debian12:nonroot`, mikebom license files); `compose.yaml`; settings bundle
+  distroless `cc-debian12:nonroot`, waybill license files); `compose.yaml`; settings bundle
   under `.github`; `renovate.json` with a versions.env regex manager.
 
-- **M3 — `ff66b06` — Adapter implementation.** `cmd/scanner-mikebom`, `pkg/etc`
+- **M3 — `ff66b06` — Adapter implementation.** `cmd/scanner-waybill`, `pkg/etc`
   (config + startup checker), `pkg/harbor` (API models, `GetImageRef`), `pkg/http/api/v1`
   (metadata/scan/report/probes/metrics, gzip, Basic property, Bearer 422, vulnerability 422),
-  `pkg/registry` (go-containerregistry pull -> docker-save tarball, D-1), `pkg/mikebom`
+  `pkg/registry` (go-containerregistry pull -> docker-save tarball, D-1), `pkg/waybill`
   (subprocess wrapper: env allowlist, `--offline`, `--timeout`, exit-124 classification,
   workdir lifecycle), `pkg/scan` (controller), `pkg/queue`, `pkg/persistence/{redis,memory}`,
   `pkg/job`, `pkg/redisx`; contract golden tests pinning the exact D-3 MIME strings and a
@@ -111,24 +111,24 @@ ff66b06 feat(adapter): implement scanner adapter service (M3)
 
 `task build`:
 ```
-task: [build:binary:linux-arm64] go build -trimpath -buildvcs=false -ldflags "... -X main.version=b7ce05d ..." -o bin/linux-arm64/scanner-mikebom ./cmd/scanner-mikebom
+task: [build:binary:linux-arm64] go build -trimpath -buildvcs=false -ldflags "... -X main.version=b7ce05d ..." -o bin/linux-arm64/scanner-waybill ./cmd/scanner-waybill
 Binaries:
--rwxr-xr-x  1 vadim  staff    16M  bin/linux-arm64/scanner-mikebom
+-rwxr-xr-x  1 vadim  staff    16M  bin/linux-arm64/scanner-waybill
 ```
 
 `task test` (all packages pass; `-short -race`):
 ```
-ok  github.com/container-registry/mikebom-harbor-adapter/cmd/scanner-mikebom       coverage: 0.0%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/etc                   coverage: 57.4%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/harbor                coverage: 81.8%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/http/api              coverage: 22.5%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/http/api/v1           coverage: 81.7%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/mikebom               coverage: 88.1%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/persistence/memory    coverage: 94.3%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/queue                 coverage: 4.7%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/registry              coverage: 92.3%
-ok  github.com/container-registry/mikebom-harbor-adapter/pkg/scan                  coverage: 78.8%
-ok  github.com/container-registry/mikebom-harbor-adapter/test/contract             coverage: [no statements]
+ok  github.com/container-registry/waybill-harbor-adapter/cmd/scanner-waybill       coverage: 0.0%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/etc                   coverage: 57.4%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/harbor                coverage: 81.8%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/http/api              coverage: 22.5%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/http/api/v1           coverage: 81.7%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/waybill               coverage: 88.1%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory    coverage: 94.3%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/queue                 coverage: 4.7%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/registry              coverage: 92.3%
+ok  github.com/container-registry/waybill-harbor-adapter/pkg/scan                  coverage: 78.8%
+ok  github.com/container-registry/waybill-harbor-adapter/test/contract             coverage: [no statements]
 ```
 Note: `task test` must run with the command sandbox disabled locally. Several tests
 (`pkg/registry`, `test/contract`) spin up `httptest` servers; under the sandbox the bind
@@ -150,10 +150,17 @@ Release-please owns tags; do not hand-tag.
 # 3. Merge the release PR (squash). The release-please job tags v0.1.0 and invokes
 #    publish-image.yml (multi-arch build, cosign sign by digest, SPDX attestation).
 # Post-release verification:
-cosign verify --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*' \
-  8gears.container-registry.com/8gcr/mikebom-harbor-adapter@<digest>
-cosign verify-attestation --type spdx <same digest>
-docker buildx imagetools inspect 8gears.container-registry.com/8gcr/mikebom-harbor-adapter:v0.1.0  # multi-arch
+# Pin the signer. A wildcard identity/issuer only proves "some Fulcio-backed
+# signature exists" and would pass for any principal that can push to the repo.
+cosign verify \
+  --certificate-identity "https://github.com/container-registry/waybill-harbor-adapter/.github/workflows/publish-image.yml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  8gears.container-registry.com/8gcr/waybill-harbor-adapter@<digest>
+cosign verify-attestation --type spdx \
+  --certificate-identity "https://github.com/container-registry/waybill-harbor-adapter/.github/workflows/publish-image.yml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  <same digest>
+docker buildx imagetools inspect 8gears.container-registry.com/8gcr/waybill-harbor-adapter:v0.1.0  # multi-arch
 ```
 
 ### M9 — deploy to demo.goharbor.io via the deployment engine (needs M8)
@@ -170,7 +177,9 @@ aws eks list-access-entries \
 Then, in `dedicated-container-registry`:
 ```
 # Edit the tenant overlay (SOPS): add values_overlay.extraManifests (block in section d below).
-SOPS_AGE_KEY=<key> sops data/tenants/demo-goharbor.secrets.yaml
+# SOPS_AGE_KEY_FILE, not an inline SOPS_AGE_KEY: an inline key lands in shell
+# history and is readable in the process environment.
+SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt sops data/tenants/demo-goharbor.secrets.yaml
 # Verify the in-namespace Valkey service name live before finalizing SCANNER_REDIS_URL.
 # Add an extraManifests render test at tests/deployment_engine/test_harbor.py (M9 requires it;
 #   harbor-next is the chart — confirm it renders .Values.extraManifests before real deploy).
@@ -182,11 +191,11 @@ ops secret to be present.
 
 ### M10 — register the scanner + smoke + closeout (needs M9)
 ```
-# Register mikebom as an additional NON-DEFAULT scanner (API key if SCANNER_API_AUTH_API_KEY set),
-#   create project zz-mikebom-smoke, bind, crane-push alpine, trigger {"scan_type":"sbom"},
+# Register waybill as an additional NON-DEFAULT scanner (API key if SCANNER_API_AUTH_API_KEY set),
+#   create project zz-waybill-smoke, bind, crane-push alpine, trigger {"scan_type":"sbom"},
 #   assert additions/sbom serves valid SPDX 2.3, delete the smoke project (registration survives).
 bash scripts/c8n-smoke.sh demo.goharbor.io admin "$ADMIN_PASSWORD" zz-smoke   # regression
-# Confirm the three upstream mikebom issues are still filed. Commit the tenant file.
+# Confirm the three upstream waybill issues are still filed. Commit the tenant file.
 ```
 
 ## c. The 8gears FedIDP robot that MUST exist before any image publish
@@ -197,7 +206,7 @@ mints a GitHub OIDC token and logs in to `8gears.container-registry.com` with
 `8gears.container-registry.com` (see MEMORY: 8gears-registry-fedidp):
 
 - **Global GitHub OIDC provider** configured.
-- **Claim rule:** `repository == container-registry/mikebom-harbor-adapter`.
+- **Claim rule:** `repository == container-registry/waybill-harbor-adapter`.
 - **Audience:** `https://8gears.container-registry.com`.
 - **Permission:** push on project `8gcr`.
 
@@ -220,15 +229,15 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
       - apiVersion: apps/v1
         kind: Deployment
         metadata:
-          name: mikebom-adapter
+          name: waybill-adapter
           namespace: demo-goharbor
-          labels: { app: mikebom-adapter }
+          labels: { app: waybill-adapter }
         spec:
           replicas: 1                      # single replica in v1 (D-8)
-          selector: { matchLabels: { app: mikebom-adapter } }
+          selector: { matchLabels: { app: waybill-adapter } }
           template:
             metadata:
-              labels: { app: mikebom-adapter }
+              labels: { app: waybill-adapter }
             spec:
               imagePullSecrets:
                 - name: 8g-registry-secret
@@ -239,16 +248,16 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
                 fsGroup: 65532
               containers:
                 - name: adapter
-                  image: 8gears.container-registry.com/8gcr/mikebom-harbor-adapter:v0.1.0
+                  image: 8gears.container-registry.com/8gcr/waybill-harbor-adapter:v0.1.0
                   imagePullPolicy: IfNotPresent
                   ports:
                     - { name: http, containerPort: 8080 }
                   env:
                     - { name: SCANNER_API_SERVER_ADDR, value: ":8080" }
                     - { name: SCANNER_REDIS_URL, value: "redis://valkey:6379" }   # verify service name live
-                    - { name: SCANNER_STORE_REDIS_NAMESPACE, value: "harbor.scanner.mikebom:data-store" }
-                    - { name: SCANNER_JOB_QUEUE_REDIS_NAMESPACE, value: "harbor.scanner.mikebom:job-queue" }
-                    - { name: SCANNER_MIKEBOM_WORK_DIR, value: "/home/scanner/work" }
+                    - { name: SCANNER_STORE_REDIS_NAMESPACE, value: "harbor.scanner.waybill:data-store" }
+                    - { name: SCANNER_JOB_QUEUE_REDIS_NAMESPACE, value: "harbor.scanner.waybill:job-queue" }
+                    - { name: SCANNER_WAYBILL_WORK_DIR, value: "/home/scanner/work" }
                     - { name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY, value: "1" }
                     # Optional API-key auth (SSRF mitigation); set to a sops secret if used:
                     # - { name: SCANNER_API_AUTH_API_KEY, value: "<secret>" }
@@ -276,19 +285,19 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
       - apiVersion: v1
         kind: Service
         metadata:
-          name: mikebom-adapter
+          name: waybill-adapter
           namespace: demo-goharbor
         spec:
-          selector: { app: mikebom-adapter }
+          selector: { app: waybill-adapter }
           ports:
             - { name: http, port: 8080, targetPort: http }
       - apiVersion: networking.k8s.io/v1
         kind: NetworkPolicy
         metadata:
-          name: mikebom-adapter
+          name: waybill-adapter
           namespace: demo-goharbor
         spec:
-          podSelector: { matchLabels: { app: mikebom-adapter } }
+          podSelector: { matchLabels: { app: waybill-adapter } }
           policyTypes: ["Ingress"]
           ingress:
             - from:
@@ -297,7 +306,7 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
               ports:
                 - { protocol: TCP, port: 8080 }
 ```
-Register (M10) with `url: http://mikebom-adapter.demo-goharbor:8080` (or
+Register (M10) with `url: http://waybill-adapter.demo-goharbor:8080` (or
 `use_internal_addr: true`; D-1 handles the hairpin `https://demo.goharbor.io` pull path).
 Verify the `component:` label selectors match the harbor-next pod labels before relying on
 the NetworkPolicy (harbor-next may label differently than upstream goharbor).
@@ -308,18 +317,18 @@ the NetworkPolicy (harbor-next may label differently than upstream goharbor).
 - **M7 gate wording vs reality:** the index `sbom_overview.scan_status == Success` is
   transient; accepted signal is the per-child `sbom.harbor` accessory (source-justified in
   `docs/harbor-behavior.md`). See blocker 3.
-- **`MIKEBOM_OFFLINE=1` is not the egress control** (plan D-5/D-7 assumed it was); the
+- **`WAYBILL_OFFLINE=1` is not the egress control** (plan D-5/D-7 assumed it was); the
   wrapper passes `--offline` in argv. Env var kept for the golang graph_resolver /
   package_db / binary-fingerprint paths that do read it. Captured in `docs/spike-m1.md` and
   D-5 was amended in the plan.
-- **mikebom image path is `ghcr.io/kusari-oss/mikebom`** (org renamed from `kusari-sandbox`
+- **waybill image path is `ghcr.io/kusari-oss/waybill`** (org renamed from `kusari-sandbox`
   in the original plan text). `versions.env` uses the correct `kusari-oss` path.
 
 ### Open owner questions (defaults proceeded; owner may override)
-- **Q-1** scanner identity strings — proceeded with `name: mikebom`, `vendor: Kusari`.
+- **Q-1** scanner identity strings — proceeded with `name: waybill`, `vendor: Kusari`.
 - **Q-2** image project — proceeded with `8gcr`.
 - **Q-4** demo scope — proceeded with additional non-default, project-bound scanner.
-- **Q-5** mirror mikebom image into 8gears vs digest-pin ghcr — proceeded with digest pin;
+- **Q-5** mirror waybill image into 8gears vs digest-pin ghcr — proceeded with digest pin;
   mirroring is a one-line `crane copy` follow-up.
 
 ### Residual risk: sbom-only footgun
@@ -350,7 +359,7 @@ Blocker/major (address before scaling beyond single-replica demo):
   (M1/M2/M4)
 - **No pull-phase deadline distinct from the job deadline.** A stalled pull with
   concurrency=1 halts all scanning until restart. Fix: dedicated `SCANNER_PULL_TIMEOUT`, set
-  LockTTL = pull budget + mikebom timeout + margin (strictly longer than the job deadline).
+  LockTTL = pull budget + waybill timeout + margin (strictly longer than the job deadline).
   (M3/M4)
 - **Report I/O amplification + uncompressed Redis storage.** The finish path moves the
   multi-MB SBOM across Redis ~4x via read-modify-write, stored raw (~5.5 MB golang vs ~1 MB
@@ -365,7 +374,7 @@ Blocker/major (address before scaling beyond single-replica demo):
 Minor (correctness/cost hygiene):
 - Harbor parses `Refresh-After` as int8 (>127 silently falls back to 5s polling); keep the
   value ≤127 and add a bound test. (M1/M2)
-- `SCANNER_MIKEBOM_TIMEOUT=0` is accepted and collapses LockTTL to 30s; reject `<= 0`. (M5)
+- `SCANNER_WAYBILL_TIMEOUT=0` is accepted and collapses LockTTL to 30s; reject `<= 0`. (M5)
 - Redis pool timeout knobs are ignored for the standalone `redis://` scheme (only sentinel
   wires them); go-redis defaults apply. Wire them or document. (M5)
 - Backstop kill reaps only the direct child, not the process group; set `Setpgid` + a
@@ -377,4 +386,4 @@ Minor (correctness/cost hygiene):
   flag could drop it. (M2)
 
 Full detail for each finding is in the milestone reports under
-`.claude/plans/mikebom-harbor-adapter/`.
+`.claude/plans/waybill-harbor-adapter/`.

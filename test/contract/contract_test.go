@@ -10,13 +10,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/etc"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/http/api"
-	v1 "github.com/container-registry/mikebom-harbor-adapter/pkg/http/api/v1"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/persistence/memory"
-	"github.com/container-registry/mikebom-harbor-adapter/pkg/queue"
-	"github.com/container-registry/mikebom-harbor-adapter/test/contract/harborcontract"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	v1 "github.com/container-registry/waybill-harbor-adapter/pkg/http/api/v1"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/queue"
+	"github.com/container-registry/waybill-harbor-adapter/test/contract/harborcontract"
 )
 
 // These are the exact contract strings Harbor uses. They are duplicated here as
@@ -34,9 +34,9 @@ func newMetadataServer(t *testing.T) *httptest.Server {
 	require.NoError(t, err)
 	cfg.API.MetricsEnabled = false
 
-	// scanner.version is the mikebom CLI version (exec'd once at startup), never
-	// from env (plan D-4). Simulate a real `mikebom --version` result here.
-	scanner := harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "0.1.0-alpha.55"}
+	// scanner.version is the waybill CLI version (exec'd once at startup), never
+	// from env (plan D-4). Simulate a real `waybill --version` result here.
+	scanner := harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "0.1.0-alpha.69"}
 
 	store := memory.NewStore()
 	enqueuer := queue.NewEnqueuer(cfg.JobQueue, nil, store)
@@ -77,8 +77,8 @@ func TestMetadataPassesVendoredHarborValidate(t *testing.T) {
 	// registry-authorization-type advertised explicitly as Basic (plan D-2).
 	assert.Equal(t, "Basic", vendored.Properties["harbor.scanner-adapter/registry-authorization-type"])
 
-	// scanner.version is the mikebom version; adapter version lives in properties.
-	assert.Equal(t, "0.1.0-alpha.55", vendored.Scanner.Version)
+	// scanner.version is the waybill version; adapter version lives in properties.
+	assert.Equal(t, "0.1.0-alpha.69", vendored.Scanner.Version)
 	assert.Equal(t, "9.9.9", vendored.Properties["org.label-schema.version"])
 }
 
@@ -123,7 +123,7 @@ func TestReportEnvelopeRoundTripsThroughRawSBOMReport(t *testing.T) {
 	envelope := harbor.ScanReport{
 		GeneratedAt: time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC),
 		Artifact:    harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
-		Scanner:     harbor.Scanner{Name: "mikebom", Vendor: "Kusari", Version: "0.1.0-alpha.55"},
+		Scanner:     harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "0.1.0-alpha.69"},
 		MediaType:   api.MediaTypeSPDX,
 		SBOM:        json.RawMessage(spdxBytes),
 	}
@@ -136,7 +136,7 @@ func TestReportEnvelopeRoundTripsThroughRawSBOMReport(t *testing.T) {
 
 	assert.Equal(t, exactSBOMMediaType, rpt.MediaType)
 	require.NotNil(t, rpt.Scanner)
-	assert.Equal(t, "mikebom", rpt.Scanner.Name)
+	assert.Equal(t, "waybill", rpt.Scanner.Name)
 
 	// sbom MUST be a JSON object (map), never a string.
 	require.NotNil(t, rpt.SBOM)
