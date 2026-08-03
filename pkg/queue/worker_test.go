@@ -232,7 +232,7 @@ func (noopStore) Get(context.Context, job.ScanJobKey) (*job.ScanJob, error) {
 func (noopStore) UpdateStatus(context.Context, job.ScanJobKey, job.ScanJobStatus, ...string) error {
 	return nil
 }
-func (noopStore) UpdateReport(context.Context, job.ScanJobKey, json.RawMessage) error { return nil }
+func (noopStore) Finish(context.Context, job.ScanJobKey, json.RawMessage) error { return nil }
 
 func jobpkgScanJob(j Job) job.ScanJob {
 	return job.ScanJob{Key: j.Key, Status: job.Queued}

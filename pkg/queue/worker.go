@@ -12,6 +12,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/scan"
 )
 
@@ -32,6 +33,10 @@ const stopTimeout = 10 * time.Second
 type Worker interface {
 	Start(ctx context.Context)
 	Stop()
+	// Depth reports how many jobs are waiting to be picked up. It backs the
+	// queue_depth gauge and runs on the Prometheus scrape goroutine, so
+	// implementations must respect the caller's context deadline.
+	Depth(ctx context.Context) (int64, error)
 }
 
 type worker struct {
@@ -181,9 +186,24 @@ func (w *worker) scanArtifact(ctx context.Context, payload string) error {
 // the lock protects it, and no longer. The context reaches the waybill subprocess
 // through exec.CommandContext, which kills it when the deadline fires.
 func (w *worker) runJob(ctx context.Context, j Job) error {
+	observeQueueWait(j)
 	jobCtx, cancel := context.WithTimeout(ctx, w.lockTTL)
 	defer cancel()
 	return w.controller.Scan(jobCtx, j.Key, j.Args.ScanRequest)
+}
+
+func (w *worker) Depth(ctx context.Context) (int64, error) {
+	return w.rdb.LLen(ctx, redisJobList(w.namespace)).Result()
+}
+
+// observeQueueWait skips the zero value so jobs enqueued before this field
+// existed (still on a list across an upgrade) do not report a wait measured
+// from the epoch.
+func observeQueueWait(j Job) {
+	if j.EnqueuedAt.IsZero() {
+		return
+	}
+	metrics.QueueWaitSeconds.Observe(time.Since(j.EnqueuedAt).Seconds())
 }
 
 func redisLockKey(namespace, jobID string) string {

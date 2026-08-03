@@ -127,3 +127,31 @@ sweeps at startup. That directory is the bound on a scan's disk use, so give it 
 sized mount: `emptyDir.sizeLimit` in K8s, `tmpfs: - /home/scanner:size=...` in
 compose. There is no pre-pull image-size cap — an oversize image is bounded by the
 mount, not rejected up front.
+
+## Observing it
+
+Scrape `GET /metrics`. The series and their meaning are in the README; the two
+that answer most integration questions:
+
+- `harbor_scanner_waybill_scans_total{outcome="failure",category=...}` separates a
+  broken scanner from a broken registration. A `category` of `RegistryPullAuth` or
+  `RegistryPullTransport` is a problem with the scanner registration or the
+  registry transport, not with waybill.
+- `harbor_scanner_waybill_queue_wait_seconds` against
+  `harbor_scanner_waybill_scan_duration_seconds`. Harbor stops polling for a
+  report after 30 minutes, so if the wait rather than the scan is what pushes a
+  job past that, raise `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` or add replicas
+  rather than the scan timeout.
+
+## How the report is stored
+
+One Redis key per job key, holding the whole record including the report envelope,
+under `SCANNER_STORE_REDIS_SCAN_JOB_TTL` (default 1h).
+
+The record is stored gzipped, because it is almost entirely the SPDX document and
+SPDX is highly repetitive JSON. Records written by an older build in plaintext are
+still readable, so a rolling upgrade needs no flush.
+
+Finishing a job is a single `SET`. It used to be `GET`/`SET`/`GET`/`SET` (an
+`UpdateReport` followed by an `UpdateStatus`, each a read-modify-write), which
+moved the whole report across the connection four times per completed scan.

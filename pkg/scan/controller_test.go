@@ -33,11 +33,11 @@ func (s ctxStore) UpdateStatus(ctx context.Context, key job.ScanJobKey, status j
 	return s.Store.UpdateStatus(ctx, key, status, msg...)
 }
 
-func (s ctxStore) UpdateReport(ctx context.Context, key job.ScanJobKey, report json.RawMessage) error {
+func (s ctxStore) Finish(ctx context.Context, key job.ScanJobKey, report json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.Store.UpdateReport(ctx, key, report)
+	return s.Store.Finish(ctx, key, report)
 }
 
 type fakeWrapper struct {

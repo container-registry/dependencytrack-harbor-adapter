@@ -18,6 +18,7 @@ import (
 	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
 )
@@ -251,6 +252,38 @@ func TestAPIKeyMiddleware(t *testing.T) {
 	req.Header.Set("X-ScannerAdapter-API-Key", "the-key")
 	h.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+// TestMetricsExposesAdapterCollectors pins that /metrics carries the adapter's
+// own series, not just the Go runtime defaults promhttp ships with. Registering
+// a collector in a package nothing imports compiles and serves nothing.
+func TestMetricsExposesAdapterCollectors(t *testing.T) {
+	cfg, err := etc.GetConfig()
+	require.NoError(t, err)
+	cfg.API.MetricsEnabled = true
+	h := NewAPIHandler(etc.BuildInfo{}, cfg, harbor.Scanner{}, &fakeEnqueuer{}, memory.NewStore(),
+		func(context.Context) error { return nil })
+
+	// A *Vec exports nothing until a label combination has been used, so the
+	// labeled metrics need one observation before the scrape can see them.
+	metrics.ScansTotal.WithLabelValues(metrics.OutcomeSuccess, metrics.CategoryNone).Inc()
+	metrics.ScanDurationSeconds.WithLabelValues(metrics.OutcomeSuccess).Observe(0)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	body := rr.Body.String()
+	for _, name := range []string{
+		"harbor_scanner_waybill_scans_total",
+		"harbor_scanner_waybill_scan_duration_seconds",
+		"harbor_scanner_waybill_queue_wait_seconds",
+		"harbor_scanner_waybill_scans_in_flight",
+		"harbor_scanner_waybill_enqueued_total",
+		"harbor_scanner_waybill_report_stored_bytes",
+	} {
+		assert.Contains(t, body, name)
+	}
 }
 
 func TestProbes(t *testing.T) {

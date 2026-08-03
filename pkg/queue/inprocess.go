@@ -109,6 +109,10 @@ func (w *inProcessWorker) Stop() {
 	}
 }
 
+func (w *inProcessWorker) Depth(_ context.Context) (int64, error) {
+	return int64(len(w.jobs)), nil
+}
+
 func (w *inProcessWorker) consume(ctx context.Context) {
 	for {
 		select {
@@ -131,6 +135,7 @@ func (w *inProcessWorker) runPayload(ctx context.Context, payload []byte) error 
 		return xerrors.Errorf("unmarshaling scan request: %w", err)
 	}
 	slog.Debug("Executing enqueued scan job", slog.String("scan_job_id", j.Key.ID))
+	observeQueueWait(j)
 	jobCtx, cancel := context.WithTimeout(ctx, w.lockTTL)
 	defer cancel()
 	return w.controller.Scan(jobCtx, j.Key, j.Args.ScanRequest)

@@ -74,6 +74,36 @@ Plus `SCANNER_API_SERVER_*` (listener and TLS), `SCANNER_API_AUTH_API_KEY`,
 `pkg/etc/config.go`; unusable combinations are rejected at startup rather than at
 scan time.
 
+## Metrics
+
+`GET /metrics` (Prometheus text format, enabled by `SCANNER_API_SERVER_METRICS_ENABLED`,
+default on). Alongside the Go runtime defaults:
+
+| Metric | Type | Notes |
+|---|---|---|
+| `harbor_scanner_waybill_scans_total` | counter | Labels `outcome` (`success`/`failure`) and `category` |
+| `harbor_scanner_waybill_scan_duration_seconds` | histogram | Label `outcome`; buckets reach 1800s |
+| `harbor_scanner_waybill_queue_wait_seconds` | histogram | Enqueue to pickup |
+| `harbor_scanner_waybill_queue_depth` | gauge | Jobs waiting; `NaN` when the queue cannot be read |
+| `harbor_scanner_waybill_scans_in_flight` | gauge | Scans executing in this process |
+| `harbor_scanner_waybill_enqueued_total` | counter | Jobs accepted |
+| `harbor_scanner_waybill_enqueue_failures_total` | counter | Requests that could not be queued |
+| `harbor_scanner_waybill_report_stored_bytes` | histogram | Stored (compressed) envelope size |
+
+`category` is the `waybill.ErrorCategory` of the failure, which is the label that
+separates a broken scanner from a misconfigured registration:
+`RegistryPullAuth` (credentials rejected), `RegistryPullTransport` (TLS or scheme),
+`RegistryPull`, `Timeout`, `WaybillExec`, and `Adapter` for failures the adapter
+raised itself.
+
+Two signals worth alerting on: a rising `queue_wait_seconds` means the worker
+pool is too small for the rate Harbor dispatches at, and a `scan_duration_seconds`
+tail past 1800s is work Harbor has already abandoned, since it stops polling for
+a report after 30 minutes.
+
+`/metrics` is served outside the `/api/v1` prefix, so `SCANNER_API_AUTH_API_KEY`
+does not protect it. Keep it off the ingress.
+
 ## Development
 
 Requires Go (see `go.mod`), [Task](https://taskfile.dev), and Docker.

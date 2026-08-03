@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/samber/lo"
@@ -22,6 +23,7 @@ import (
 	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 )
 
@@ -45,6 +47,10 @@ type Job struct {
 	Name string
 	Key  job.ScanJobKey
 	Args Args
+	// EnqueuedAt travels with the payload so the worker can report how long the
+	// job waited. Queue wait is what distinguishes "scans are slow" from "the
+	// worker pool is too small for the rate Harbor dispatches at".
+	EnqueuedAt time.Time `json:",omitempty"`
 }
 
 func (s *Job) ID() string {
@@ -99,9 +105,10 @@ func (e *enqueuer) Enqueue(ctx context.Context, request harbor.ScanRequest) (str
 					MediaType: mediaType,
 				}
 				j := Job{
-					Name: scanArtifactJobName,
-					Key:  jobKey,
-					Args: Args{ScanRequest: &request},
+					Name:       scanArtifactJobName,
+					Key:        jobKey,
+					Args:       Args{ScanRequest: &request},
+					EnqueuedAt: time.Now().UTC(),
 				}
 				scanJob := job.ScanJob{Key: jobKey, Status: job.Queued}
 				if err := e.enqueue(ctx, j, scanJob); err != nil {
@@ -128,9 +135,11 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 	}
 
 	if err = e.dispatch(ctx, b); err != nil {
+		metrics.EnqueueFailuresTotal.Inc()
 		return xerrors.Errorf("enqueuing scan artifact job: %v", err)
 	}
 
+	metrics.EnqueuedTotal.Inc()
 	logger.Debug("Successfully enqueued scan job")
 	return nil
 }

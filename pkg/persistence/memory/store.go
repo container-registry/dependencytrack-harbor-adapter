@@ -60,7 +60,7 @@ func (s *store) UpdateStatus(_ context.Context, scanJobKey job.ScanJobKey, newSt
 	return nil
 }
 
-func (s *store) UpdateReport(_ context.Context, scanJobKey job.ScanJobKey, report json.RawMessage) error {
+func (s *store) Finish(_ context.Context, scanJobKey job.ScanJobKey, report json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := scanJobKey.String()
@@ -69,6 +69,7 @@ func (s *store) UpdateReport(_ context.Context, scanJobKey job.ScanJobKey, repor
 		return xerrors.Errorf("scan job (%s) not found", key)
 	}
 	j.Report = report
+	j.Status = job.Finished
 	s.jobs[key] = j
 	return nil
 }

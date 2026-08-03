@@ -25,9 +25,9 @@ func NewStore(cfg etc.RedisStore, rdb *redis.Client) persistence.Store {
 }
 
 func (s *store) Create(ctx context.Context, scanJob job.ScanJob) error {
-	bytes, err := json.Marshal(scanJob)
+	bytes, err := encode(scanJob)
 	if err != nil {
-		return xerrors.Errorf("marshaling scan job: %w", err)
+		return err
 	}
 	key := s.keyForScanJob(scanJob.Key)
 	storeLogger(scanJob.Key).Debug("Saving scan job",
@@ -35,23 +35,23 @@ func (s *store) Create(ctx context.Context, scanJob job.ScanJob) error {
 		slog.String("redis_key", key),
 		slog.Duration("expire", s.cfg.ScanJobTTL),
 	)
-	if err = s.rdb.SetNX(ctx, key, string(bytes), s.cfg.ScanJobTTL).Err(); err != nil {
+	if err = s.rdb.SetNX(ctx, key, bytes, s.cfg.ScanJobTTL).Err(); err != nil {
 		return xerrors.Errorf("creating scan job: %w", err)
 	}
 	return nil
 }
 
 func (s *store) update(ctx context.Context, scanJob job.ScanJob) error {
-	bytes, err := json.Marshal(scanJob)
+	bytes, err := encode(scanJob)
 	if err != nil {
-		return xerrors.Errorf("marshaling scan job: %w", err)
+		return err
 	}
 	key := s.keyForScanJob(scanJob.Key)
 	// SetXX reports whether the key was actually there to update. Checking only
 	// Err() would treat "the key expired between the Get and this write" as
 	// success and silently drop the update — the exact race ScanJobTTL makes
 	// likely for a long scan.
-	updated, err := s.rdb.SetXX(ctx, key, string(bytes), s.cfg.ScanJobTTL).Result()
+	updated, err := s.rdb.SetXX(ctx, key, bytes, s.cfg.ScanJobTTL).Result()
 	if err != nil {
 		return xerrors.Errorf("updating scan job: %w", err)
 	}
@@ -69,11 +69,11 @@ func (s *store) Get(ctx context.Context, scanJobKey job.ScanJobKey) (*job.ScanJo
 	} else if err != nil {
 		return nil, err
 	}
-	var scanJob job.ScanJob
-	if err = json.Unmarshal([]byte(value), &scanJob); err != nil {
-		return nil, xerrors.Errorf("unmarshaling scan job: %w", err)
+	scanJob, err := decode([]byte(value))
+	if err != nil {
+		return nil, err
 	}
-	return &scanJob, nil
+	return scanJob, nil
 }
 
 func (s *store) UpdateStatus(ctx context.Context, scanJobKey job.ScanJobKey, newStatus job.ScanJobStatus, errorMsg ...string) error {
@@ -91,16 +91,16 @@ func (s *store) UpdateStatus(ctx context.Context, scanJobKey job.ScanJobKey, new
 	return s.update(ctx, *scanJob)
 }
 
-func (s *store) UpdateReport(ctx context.Context, scanJobKey job.ScanJobKey, report json.RawMessage) error {
-	scanJob, err := s.Get(ctx, scanJobKey)
-	if err != nil {
-		return err
-	}
-	if scanJob == nil {
-		return xerrors.Errorf("scan job (%s) not found", scanJobKey.String())
-	}
-	scanJob.Report = report
-	return s.update(ctx, *scanJob)
+// Finish writes the terminal record without reading it first. Every field is
+// known here — the key from the caller, Finished, an empty error and the report
+// — so the read-modify-write the other updaters need would only pull the report
+// back out of Redis to put it straight back in.
+func (s *store) Finish(ctx context.Context, scanJobKey job.ScanJobKey, report json.RawMessage) error {
+	return s.update(ctx, job.ScanJob{
+		Key:    scanJobKey,
+		Status: job.Finished,
+		Report: report,
+	})
 }
 
 func (s *store) keyForScanJob(scanJobKey job.ScanJobKey) string {

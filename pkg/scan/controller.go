@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/waybill"
 )
@@ -63,7 +65,17 @@ func NewController(store persistence.Store, wrapper waybill.Wrapper, scanner har
 }
 
 func (c *controller) Scan(ctx context.Context, scanJobKey job.ScanJobKey, request *harbor.ScanRequest) error {
-	if err := c.scan(ctx, scanJobKey, request); err != nil {
+	metrics.ScansInFlight.Inc()
+	// Wall-clock, not c.clock: the injectable clock is pinned in tests so a
+	// difference taken from it would be a constant zero.
+	started := time.Now()
+
+	err := c.scan(ctx, scanJobKey, request)
+
+	metrics.ScansInFlight.Dec()
+	metrics.ObserveScan(err == nil, errorCategory(err), time.Since(started).Seconds())
+
+	if err != nil {
 		errMsg := err.Error()
 		slog.Error("Scan failed", slog.String("scan_job_id", scanJobKey.ID), slog.String("err", errMsg))
 		// Detach from ctx: the per-job deadline may already have fired (that is
@@ -75,6 +87,21 @@ func (c *controller) Scan(ctx context.Context, scanJobKey job.ScanJobKey, reques
 		}
 	}
 	return nil
+}
+
+// errorCategory maps a scan failure onto the metrics category label. Failures
+// raised by the adapter itself (nil request, workdir, store write) carry no
+// waybill.Error; they get their own label rather than being folded into
+// WaybillExec, which would blame the scanner for the adapter's bugs.
+func errorCategory(err error) string {
+	if err == nil {
+		return metrics.CategoryNone
+	}
+	var wErr *waybill.Error
+	if errors.As(err, &wErr) {
+		return string(wErr.Category)
+	}
+	return "Adapter"
 }
 
 func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *harbor.ScanRequest) (err error) {
@@ -122,16 +149,14 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 		return err
 	}
 
-	// Terminal writes run detached from the job deadline: a scan that completed
-	// just under the deadline must still be recorded as Finished, not lost to an
-	// expired context (same window that strands a Failed write, escalated blocker).
+	// The terminal write runs detached from the job deadline: a scan that
+	// completed just under the deadline must still be recorded as Finished, not
+	// lost to an expired context (same window that strands a Failed write,
+	// escalated blocker).
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
 	defer cancel()
-	if err = c.store.UpdateReport(writeCtx, scanJobKey, envelope); err != nil {
+	if err = c.store.Finish(writeCtx, scanJobKey, envelope); err != nil {
 		return xerrors.Errorf("saving scan report: %v", err)
-	}
-	if err = c.store.UpdateStatus(writeCtx, scanJobKey, job.Finished); err != nil {
-		return xerrors.Errorf("updating scan job status: %v", err)
 	}
 	return nil
 }

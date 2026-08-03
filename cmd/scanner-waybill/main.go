@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,6 +21,7 @@ import (
 	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
 	v1 "github.com/container-registry/waybill-harbor-adapter/pkg/http/api/v1"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
 	predis "github.com/container-registry/waybill-harbor-adapter/pkg/persistence/redis"
@@ -40,6 +42,11 @@ const (
 	scannerName   = "waybill"
 	scannerVendor = "Kusari"
 )
+
+// queueDepthTimeout bounds the LLEN behind the queue_depth gauge. It runs on the
+// Prometheus scrape goroutine, so it must not outlive a scrape; the Redis pool's
+// own read timeout defaults to 1s.
+const queueDepthTimeout = 2 * time.Second
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -136,6 +143,17 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 			"Nothing survives a restart and a second replica shares no state. Use SCANNER_STORE_BACKEND=redis in production.")
 		enqueuer, worker = queue.NewInProcessQueue(config.JobQueue, config.LockTTL(), store, controller)
 	}
+
+	metrics.MustRegisterQueueDepth(func() float64 {
+		dctx, dcancel := context.WithTimeout(ctx, queueDepthTimeout)
+		defer dcancel()
+		n, derr := worker.Depth(dctx)
+		if derr != nil {
+			// NaN, not 0: an unreadable Redis must not render as an empty queue.
+			return math.NaN()
+		}
+		return float64(n)
+	})
 
 	ready := func(rctx context.Context) error {
 		if pinger != nil {

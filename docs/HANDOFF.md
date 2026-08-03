@@ -377,10 +377,25 @@ Blocker/major (address before scaling beyond single-replica demo):
   deadline — but a stalled pull at concurrency=1 still occupies the worker for the full
   budget. Fix: a dedicated pull budget, with LockTTL strictly longer than the job deadline.
   (M3/M4)
-- **Report I/O amplification + uncompressed Redis storage.** The finish path moves the
-  multi-MB SBOM across Redis ~4x via read-modify-write, stored raw (~5.5 MB golang vs ~1 MB
-  gzipped). Bounded by go-redis per-command timeouts. Fix: single SetXX at finish, gzip the
-  stored envelope. (M3/M4/M5)
+- ~~**Report I/O amplification + uncompressed Redis storage.**~~ **FIXED.** `Store.Finish`
+  replaces the `UpdateReport` + `UpdateStatus(Finished)` pair with one `SetXX` and no read;
+  the record is stored gzipped, and `decode` sniffs the gzip magic so plaintext records from
+  the previous build survive a rolling upgrade. Pinned by `TestFinishIsASingleWrite`, which
+  records the actual command sequence (the old path reproduces as `GET SET GET SET`).
+  Measured on the devenv: a 52,399-byte alpine envelope stores as 7,235 bytes (7.2x); a
+  synthetic 2000-package SPDX compresses 26.5x. Verified live that a pre-upgrade plaintext
+  record still serves HTTP 200. (M3/M4/M5)
+- ~~**No adapter-specific metrics.**~~ **FIXED.** `/metrics` served only Go runtime stats, so
+  scan rate, latency and failure cause were invisible. `pkg/metrics` adds
+  `scans_total{outcome,category}`, `scan_duration_seconds{outcome}`, `queue_wait_seconds`,
+  `queue_depth`, `scans_in_flight`, `enqueued_total`, `enqueue_failures_total` and
+  `report_stored_bytes`. `category` reuses `waybill.ErrorCategory`, so a registration or
+  transport problem is distinguishable from a scanner failure without reading pod logs;
+  adapter-raised failures get their own `Adapter` label rather than being blamed on waybill.
+  Verified on the devenv: three real scans produced `category="none"` (success),
+  `RegistryPull` (bad digest) and `RegistryPullTransport` (https against a plain-HTTP
+  registry). Note `/metrics` sits outside `/api/v1`, so the API key does not protect it.
+  (M3/M4/M5)
 - **Throughput mismatch.** Adapter is serial (concurrency 1) while Harbor jobservice runs
   many scan jobs in parallel, each polling ≤30 min; jobs whose wait exceeds 30 min are
   abandoned by Harbor but still fully executed by the adapter (wasted CPU/egress). Fix:

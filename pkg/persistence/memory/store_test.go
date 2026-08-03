@@ -34,8 +34,7 @@ func TestMemoryStoreLifecycle(t *testing.T) {
 	assert.Equal(t, job.Pending, got.Status)
 
 	report := json.RawMessage(`{"media_type":"application/spdx+json"}`)
-	require.NoError(t, s.UpdateReport(ctx, k, report))
-	require.NoError(t, s.UpdateStatus(ctx, k, job.Finished))
+	require.NoError(t, s.Finish(ctx, k, report))
 
 	got, err = s.Get(ctx, k)
 	require.NoError(t, err)
