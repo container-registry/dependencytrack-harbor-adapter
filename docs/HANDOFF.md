@@ -7,14 +7,21 @@ Every claim here was verified against the working tree, `git`, and the actual ga
 commands on 2026-07-09. Where a claim is a design decision it cites the plan of record
 (`.claude/plans/waybill-harbor-adapter.md`).
 
-## READ THIS FIRST — acceptance status and why the PR should open as a draft
+## READ THIS FIRST — acceptance status
 
-Milestones **M1–M5 are complete and accepted**. **M7 (devenv e2e) is committed but was
-HALTED at acceptance after 3 attempts** over blockers that are *not* inside this repo and
-that a HARD RULE forbids this agent from fixing (do not modify `../harbor` or
-`../dedicated-container-registry`). Open the PR as a **draft** until the owner clears them.
+> **Update — M7 now passes.** Milestones **M1–M5 and M7 are complete**. The section below is
+> the historical record of why M7 was halted; blockers 1 and 2 (dirty sibling working trees)
+> were owner-side workspace hygiene and no longer gate anything, and the e2e has since been
+> run green against a live Harbor devenv on slot 0: the single-manifest fixture reached
+> `Success` with an `sbom.harbor` accessory and valid SPDX 2.3, and all 8 children of the
+> multi-arch index fanned out with accessories. Blockers 3 and 4 are documentation of Harbor
+> behavior and a known script defect, both still accurate — read them.
+>
+> Separately, the upstream project was renamed to `kusari-oss/waybill` and its milestone 182
+> closed the two OCI-pull blockers this adapter was designed around, so the D-1 self-pull is
+> gone. See `docs/upstream-issues.md` and `docs/PR-BODY.md`.
 
-Outstanding M7 blockers (all outside this repo, none reference waybill):
+Historical M7 blockers (all outside this repo, none referenced waybill):
 
 1. **`../harbor` working tree is not clean**, and the M7 gate literally requires
    `git -C ../harbor status --porcelain` to be empty. Verified now:
@@ -345,21 +352,30 @@ clean-shell re-run can fail before scanning. Not fixed. Workaround documented ab
 These are known and deferred. None block a draft PR; several should be addressed before a
 production (non-demo) rollout.
 
+**FIXED since this list was written** (see the waybill-rename commit): the Pub/Sub queue,
+the ignored Redis pool timeouts on `redis://`, and `SCANNER_WAYBILL_TIMEOUT<=0`. They are
+struck from the lists below.
+
 Blocker/major (address before scaling beyond single-replica demo):
-- **Queue is Redis Pub/Sub — silent job loss.** go-redis buffers 100 messages, drops after
-  60s full; an adapter restart loses every queued/in-flight job (they sit Queued until the
-  1h TTL while Harbor polls). Backlog >~101 with 1 worker at minutes-per-scan starts
-  dropping. Fix: switch to a Redis list/stream (LPUSH/BRPOPLPUSH); the SetNX lock already
-  dedupes. (M3/M4/M5)
-- **Per-job workdir is unbounded and, in the shipped compose harnesses, RAM-backed tmpfs.**
-  No image-size cap or free-space check before pull; `/scan` accepts attacker-influenced
-  registry URLs (SSRF surface). A multi-GB image can OOM the pod instead of failing cleanly.
-  Fix: sum manifest layer sizes and reject above a configurable cap; use disk-backed
-  emptyDir with sizeLimit in K8s (encoded in the block above), add `size=` to compose tmpfs.
+- ~~**Queue is Redis Pub/Sub — silent job loss.**~~ **FIXED.** Replaced with a Redis list
+  (`RPUSH`/`BRPOP`): an entry persists with no subscriber and is delivered to exactly one
+  consumer. Two miniredis regression tests pin the old failure modes (enqueue-before-worker,
+  150-job backlog vs the 100-message buffer). Residual gap: a worker that crashes *mid-scan*
+  still loses that job until the TTL — full at-least-once needs `BLMOVE` to a processing
+  list plus a reaper. (M3/M4/M5)
+- **No pre-pull image-size cap; per-job workdir is the only bound.** Partially improved: the
+  adapter no longer does an unbounded `crane.Pull` + `crane.Save`, and the second full-size
+  tarball copy is gone — waybill streams into the per-job workdir, which is deleted at job
+  end and swept at startup. But nothing sums manifest layer sizes before the pull, and
+  `/scan` still accepts attacker-influenced registry URLs (SSRF surface). A multi-GB image
+  fills the workdir mount rather than being rejected. Every shipped harness sizes that mount
+  (`size=2G`/`4G` compose tmpfs) and `docs/INTEGRATION.md` states the `emptyDir.sizeLimit`
+  requirement for K8s. Real fix: probe the manifest and reject above a configurable cap.
   (M1/M2/M4)
-- **No pull-phase deadline distinct from the job deadline.** A stalled pull with
-  concurrency=1 halts all scanning until restart. Fix: dedicated `SCANNER_PULL_TIMEOUT`, set
-  LockTTL = pull budget + waybill timeout + margin (strictly longer than the job deadline).
+- **No pull-phase deadline distinct from the job deadline.** Less sharp than it was — the
+  pull now lives inside the waybill subprocess and shares its `--timeout` plus the job
+  deadline — but a stalled pull at concurrency=1 still occupies the worker for the full
+  budget. Fix: a dedicated pull budget, with LockTTL strictly longer than the job deadline.
   (M3/M4)
 - **Report I/O amplification + uncompressed Redis storage.** The finish path moves the
   multi-MB SBOM across Redis ~4x via read-modify-write, stored raw (~5.5 MB golang vs ~1 MB
@@ -374,9 +390,11 @@ Blocker/major (address before scaling beyond single-replica demo):
 Minor (correctness/cost hygiene):
 - Harbor parses `Refresh-After` as int8 (>127 silently falls back to 5s polling); keep the
   value ≤127 and add a bound test. (M1/M2)
-- `SCANNER_WAYBILL_TIMEOUT=0` is accepted and collapses LockTTL to 30s; reject `<= 0`. (M5)
-- Redis pool timeout knobs are ignored for the standalone `redis://` scheme (only sentinel
-  wires them); go-redis defaults apply. Wire them or document. (M5)
+- ~~`SCANNER_WAYBILL_TIMEOUT=0` is accepted and collapses LockTTL to 30s.~~ **FIXED** —
+  rejected at startup, along with empty Redis namespaces, a non-positive `ScanJobTTL`, a
+  worker concurrency below 1, and an unrecognized `SCANNER_STORE_BACKEND`. (M5)
+- ~~Redis pool timeout knobs are ignored for the standalone `redis://` scheme.~~ **FIXED**
+  in `ceac2d3`. (M5)
 - Backstop kill reaps only the direct child, not the process group; set `Setpgid` + a
   group-kill `Cancel`. (M3)
 - CI cost: golangci-lint/govulncheck compiled from source each run; QEMU installed in

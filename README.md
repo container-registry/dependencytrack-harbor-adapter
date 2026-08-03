@@ -15,19 +15,64 @@ pluggable scanner. It advertises exactly one capability: `type: "sbom"`.
 
 ## How it works
 
-Harbor's OCI registry (in a devenv, and behind private CAs) cannot always be
-reached by waybill directly: waybill hardcodes `https://` for OCI pulls and trusts
-only webpki roots. Therefore the adapter pulls the artifact itself with
-go-containerregistry (Basic creds decoded from the scan request, anonymous when
-empty, plain-HTTP when `registry.url` is `http`), writes a docker-save tarball into
-a per-job work dir, and runs:
+The adapter turns a Harbor scan request into one `waybill` invocation. waybill
+pulls the artifact from Harbor's registry itself and scans it in the same process:
 
 ```
-waybill sbom scan --image <workdir>/image.tar --format spdx-2.3-json --output ...
+waybill --offline --timeout <n> sbom scan \
+  --image core:8080/library/alpine@sha256:... \
+  --image-src remote \
+  --format spdx-2.3-json --output spdx-2.3-json=<workdir>/report.spdx.json \
+  --insecure-registry core:8080 \
+  --no-oci-cache
 ```
 
-waybill never touches the network for the artifact pull. Enrichment network calls
-are disabled with the `--offline` CLI flag (see `docs/spike-m1.md`).
+`--image-src remote` is pinned rather than defaulted: waybill's default order is
+`docker,podman,remote`, and the image ships no container runtime to probe.
+
+Registry transport is derived from the scan request and configuration:
+
+| Situation | What the adapter passes |
+|---|---|
+| `registry.url` scheme is `http` | `--insecure-registry <host:port>` |
+| Registry behind a private CA | `--registry-ca-cert <path>` per `SCANNER_WAYBILL_REGISTRY_CA_CERTS` |
+| Self-signed dev/CI certs | `--insecure-tls-skip-verify` per `SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY` |
+
+Credentials (Basic, decoded from the scan request; anonymous when the header is
+empty) are passed through the environment as
+`WAYBILL_REGISTRY_<HOST>_USERNAME`/`_PASSWORD`, never through argv — argv is
+readable by anything that can stat `/proc/<pid>/cmdline`.
+
+Enrichment network calls (deps.dev, ClearlyDefined) are disabled with the
+`--offline` CLI flag; the env var alone does not disable them (see
+`docs/spike-m1.md`). `--offline` does not affect the registry pull.
+
+Earlier revisions pulled the artifact themselves with go-containerregistry and
+handed waybill a docker-save tarball, because waybill's OCI client hardcoded
+`https://` and trusted only webpki roots. waybill milestone 182 fixed both; see
+`docs/upstream-issues.md`.
+
+## Configuration
+
+All configuration is environment variables. The scanner-facing ones:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SCANNER_WAYBILL_BINARY` | `/usr/local/bin/waybill` | waybill CLI path |
+| `SCANNER_WAYBILL_WORK_DIR` | `/home/scanner/work` | Per-job scratch root; must be writable and sized |
+| `SCANNER_WAYBILL_TIMEOUT` | `5m0s` | Per-scan timeout; also derives the job lock TTL. Must be positive |
+| `SCANNER_WAYBILL_REGISTRY_CA_CERTS` | — | Comma-separated PEM bundles trusted for the registry pull |
+| `SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY` | `false` | Disable TLS verification for pulls (dev/CI only) |
+| `SCANNER_WAYBILL_ENRICHMENT` | `false` | Drop `--offline`, allowing deps.dev / ClearlyDefined egress |
+| `SCANNER_WAYBILL_IMAGE_PLATFORM` | — | Override the platform resolved from a multi-arch index |
+| `SCANNER_WAYBILL_OCI_CACHE_SIZE` | `0` | Blob-cache cap in bytes; `0` passes `--no-oci-cache` |
+| `SCANNER_WAYBILL_EXTRA_ARGS` | — | Space-separated extra waybill flags |
+
+Plus `SCANNER_API_SERVER_*` (listener and TLS), `SCANNER_API_AUTH_API_KEY`,
+`SCANNER_STORE_BACKEND` (`redis` or `memory`), `SCANNER_STORE_REDIS_*`,
+`SCANNER_JOB_QUEUE_REDIS_*`, `SCANNER_REDIS_*` and `SCANNER_LOG_LEVEL`. See
+`pkg/etc/config.go`; unusable combinations are rejected at startup rather than at
+scan time.
 
 ## Development
 

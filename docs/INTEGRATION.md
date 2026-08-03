@@ -79,15 +79,51 @@ Harbor then calls the adapter's `POST /api/v1/scan`, polls
 the resulting SPDX document as an `sbom.harbor` accessory. Download it via the artifact's
 `additions/sbom` endpoint or the SBOM tab in the UI.
 
-## How the adapter pulls the artifact
+## How the artifact is pulled
 
-The adapter pulls the image itself with go-containerregistry, using the Basic credentials
-from the scan request (anonymous when empty), writes a docker-save tarball, and runs
-waybill against the tarball (`--image <tarball>`). It does this because waybill's own OCI
-client cannot pull from plain-HTTP or private-CA registries (plan D-1). `registry.url`
-with an `http://` scheme is treated as insecure automatically, which is why
+waybill pulls it, via `--image <ref> --image-src remote`. The adapter passes the
+reference from the scan request, the transport flags below, and the Basic
+credentials (anonymous when the authorization header is empty). Credentials go
+through the environment as `WAYBILL_REGISTRY_<HOST>_USERNAME`/`_PASSWORD`, never
+through argv.
+
+**Plain-HTTP registries.** A `registry.url` with an `http://` scheme is treated as
+insecure automatically and becomes `--insecure-registry <host:port>`. This is why
 `use_internal_addr: true` works against the Harbor devenv's `http://core:8080`.
 
-waybill runs with `--offline`: it never makes outbound enrichment calls (deps.dev,
-ClearlyDefined). See `docs/spike-m1.md` for why the flag, not the `WAYBILL_OFFLINE` env
-var, is the real egress control.
+**Private-CA registries.** Set `SCANNER_WAYBILL_REGISTRY_CA_CERTS` to a
+comma-separated list of PEM bundle paths mounted into the container; each becomes a
+`--registry-ca-cert`. Every path is stat'd at startup, so a wrong path fails the
+deployment rather than every scan. Example (K8s):
+
+```yaml
+env:
+  - name: SCANNER_WAYBILL_REGISTRY_CA_CERTS
+    value: /etc/waybill/ca/harbor-ca.pem
+volumeMounts:
+  - name: registry-ca
+    mountPath: /etc/waybill/ca
+    readOnly: true
+```
+
+`SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY=true` disables chain, hostname and expiry
+verification for every pull. It logs a WARN at startup and is for dev/CI against
+self-signed certs only — prefer the CA bundle in production.
+
+A pull failure is reported on the job with its cause: `RegistryPullAuth` (the
+registry rejected the credentials), `RegistryPullTransport` (TLS or scheme
+mismatch — usually a missing `--insecure-registry` or CA bundle), or
+`RegistryPull`. Those are configuration problems, distinct from a `WaybillExec`
+scanner failure.
+
+**Egress.** waybill runs with `--offline`: it makes no outbound enrichment calls
+(deps.dev, ClearlyDefined). See `docs/spike-m1.md` for why the flag, not the
+`WAYBILL_OFFLINE` env var, is the real egress control. `--offline` does not affect
+the registry pull.
+
+**Disk.** waybill writes its layer scratch and blob cache under the per-job work
+dir (`SCANNER_WAYBILL_WORK_DIR`), which the adapter deletes when the job ends and
+sweeps at startup. That directory is the bound on a scan's disk use, so give it a
+sized mount: `emptyDir.sizeLimit` in K8s, `tmpfs: - /home/scanner:size=...` in
+compose. There is no pre-pull image-size cap — an oversize image is bounded by the
+mount, not rejected up front.

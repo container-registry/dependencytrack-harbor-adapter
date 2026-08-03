@@ -147,6 +147,12 @@ func GetConfig() (Config, error) {
 //   - a zero ScanJobTTL means "no expiry" to go-redis, so every scan job would
 //     persist forever, and a negative one makes Redis reject every store write.
 func (c Config) validate() error {
+	// A non-positive scan timeout drops --timeout from the waybill argv (so the
+	// scan is unbounded on that side) and collapses LockTTL to 30s, which is
+	// shorter than any real scan.
+	if c.Waybill.Timeout <= 0 {
+		return fmt.Errorf("SCANNER_WAYBILL_TIMEOUT must be positive, got %s", c.Waybill.Timeout)
+	}
 	switch c.Store.Backend {
 	case StoreBackendRedis, StoreBackendMemory:
 	default:
