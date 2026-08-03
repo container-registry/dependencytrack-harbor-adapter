@@ -33,8 +33,12 @@ type Enqueuer interface {
 
 type enqueuer struct {
 	namespace string
-	rdb       *redis.Client
 	store     persistence.Store
+	// dispatch hands the marshaled job to the transport. Redis-backed deployments
+	// RPUSH it onto the shared list; the in-process backend passes it down a
+	// channel. Everything above this line -- validation, job-key fan-out, the
+	// Queued store record -- is identical either way.
+	dispatch func(ctx context.Context, payload []byte) error
 }
 
 type Job struct {
@@ -52,10 +56,19 @@ type Args struct {
 }
 
 func NewEnqueuer(config etc.JobQueue, rdb *redis.Client, store persistence.Store) Enqueuer {
+	list := redisJobList(config.Namespace)
 	return &enqueuer{
 		namespace: config.Namespace,
-		rdb:       rdb,
 		store:     store,
+		dispatch: func(ctx context.Context, payload []byte) error {
+			// RPUSH appends at the tail and the workers BLPOP from the head:
+			// opposite ends, so the queue is FIFO. (Same-end RPUSH/BRPOP would be
+			// a LIFO stack, and a steady arrival rate would starve the oldest
+			// scans indefinitely.) Unlike Publish this does not need a live
+			// subscriber: the entry sits in the list until a worker takes it, so
+			// a job accepted while no worker is listening still runs.
+			return rdb.RPush(ctx, list, payload).Err()
+		},
 	}
 }
 
@@ -114,13 +127,7 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 		return xerrors.Errorf("marshaling scan request: %v", err)
 	}
 
-	// RPUSH appends at the tail and the workers BLPOP from the head: opposite
-	// ends, so the queue is FIFO. (Same-end RPUSH/BRPOP would be a LIFO stack, and
-	// a steady arrival rate would starve the oldest scans indefinitely.) Unlike
-	// Publish this does not need a live subscriber: the entry sits in the list
-	// until a worker takes it, so a job accepted while no worker is listening
-	// still runs.
-	if err = e.rdb.RPush(ctx, redisJobList(e.namespace), b).Err(); err != nil {
+	if err = e.dispatch(ctx, b); err != nil {
 		return xerrors.Errorf("enqueuing scan artifact job: %v", err)
 	}
 

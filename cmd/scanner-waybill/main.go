@@ -119,7 +119,23 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	}
 
 	controller := scan.NewController(store, wrapper, scanner, config.Waybill.WorkDir)
-	enqueuer := queue.NewEnqueuer(config.JobQueue, rdb, store)
+
+	// The enqueuer and the worker are always built as a pair. Previously the
+	// worker was conditional while the enqueuer was not, so the memory backend
+	// produced an adapter that started, reported healthy, and had no consumer at
+	// all -- and whose enqueuer dereferenced a nil Redis client on the first scan.
+	var (
+		enqueuer queue.Enqueuer
+		worker   queue.Worker
+	)
+	if useRedis {
+		enqueuer = queue.NewEnqueuer(config.JobQueue, rdb, store)
+		worker = queue.NewWorker(config.JobQueue, config.LockTTL(), rdb, controller)
+	} else {
+		slog.Warn("Store backend is memory: scan jobs and reports are held in this process only. " +
+			"Nothing survives a restart and a second replica shares no state. Use SCANNER_STORE_BACKEND=redis in production.")
+		enqueuer, worker = queue.NewInProcessQueue(config.JobQueue, config.LockTTL(), store, controller)
+	}
 
 	ready := func(rctx context.Context) error {
 		if pinger != nil {
@@ -134,11 +150,7 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		return fmt.Errorf("new api server: %w", err)
 	}
 
-	var worker queue.Worker
-	if useRedis {
-		worker = queue.NewWorker(config.JobQueue, config.LockTTL(), rdb, controller)
-		worker.Start(ctx)
-	}
+	worker.Start(ctx)
 
 	shutdownComplete := make(chan struct{})
 	go func() {

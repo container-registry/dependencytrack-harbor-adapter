@@ -85,7 +85,7 @@ func TestEnqueueBeforeWorkerStartsStillRuns(t *testing.T) {
 	_, rdb := newTestRedis(t)
 	const ns = "test.ns"
 
-	enq := &enqueuer{namespace: ns, rdb: rdb, store: noopStore{}}
+	enq := NewEnqueuer(etc.JobQueue{Namespace: ns}, rdb, noopStore{}).(*enqueuer)
 	j := Job{Name: scanArtifactJobName, Key: job.ScanJobKey{ID: "job-1", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX}, Args: Args{ScanRequest: &harbor.ScanRequest{}}}
 	require.NoError(t, enq.enqueue(context.Background(), j, jobpkgScanJob(j)))
 
@@ -110,7 +110,7 @@ func TestBacklogLargerThanPubSubBufferIsNotDropped(t *testing.T) {
 	const ns = "test.ns"
 	const jobs = 150 // > go-redis's 100-message Channel() buffer
 
-	enq := &enqueuer{namespace: ns, rdb: rdb, store: noopStore{}}
+	enq := NewEnqueuer(etc.JobQueue{Namespace: ns}, rdb, noopStore{}).(*enqueuer)
 	for i := 0; i < jobs; i++ {
 		j := Job{Name: scanArtifactJobName, Key: job.ScanJobKey{ID: fmt.Sprintf("job-%d", i), MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX}, Args: Args{ScanRequest: &harbor.ScanRequest{}}}
 		require.NoError(t, enq.enqueue(context.Background(), j, jobpkgScanJob(j)))
@@ -137,7 +137,7 @@ func TestQueueIsFIFO(t *testing.T) {
 	const ns = "test.ns"
 	const jobs = 10
 
-	enq := &enqueuer{namespace: ns, rdb: rdb, store: noopStore{}}
+	enq := NewEnqueuer(etc.JobQueue{Namespace: ns}, rdb, noopStore{}).(*enqueuer)
 	for i := 0; i < jobs; i++ {
 		j := Job{
 			Name: scanArtifactJobName,
@@ -171,7 +171,7 @@ func TestStopIsBoundedWhileScanning(t *testing.T) {
 	_, rdb := newTestRedis(t)
 	const ns = "test.ns"
 
-	enq := &enqueuer{namespace: ns, rdb: rdb, store: noopStore{}}
+	enq := NewEnqueuer(etc.JobQueue{Namespace: ns}, rdb, noopStore{}).(*enqueuer)
 	j := Job{
 		Name: scanArtifactJobName,
 		Key:  job.ScanJobKey{ID: "slow", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX},
