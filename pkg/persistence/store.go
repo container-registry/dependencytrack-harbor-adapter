@@ -5,9 +5,17 @@ package persistence
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
 )
+
+// ErrJobNotFound is returned when a write targets a record that is not there.
+// In practice that means the job outlived SCANNER_STORE_REDIS_SCAN_JOB_TTL while
+// it sat in the queue, which is a capacity signal, not a bug — so it is a
+// sentinel rather than a bare string, and callers report it separately instead
+// of folding it in with genuine failures.
+var ErrJobNotFound = errors.New("scan job not found (queued longer than the scan job TTL?)")
 
 type Store interface {
 	Create(ctx context.Context, scanJob job.ScanJob) error

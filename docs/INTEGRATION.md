@@ -138,10 +138,79 @@ that answer most integration questions:
   `RegistryPullTransport` is a problem with the scanner registration or the
   registry transport, not with waybill.
 - `harbor_scanner_waybill_queue_wait_seconds` against
-  `harbor_scanner_waybill_scan_duration_seconds`. Harbor stops polling for a
-  report after 30 minutes, so if the wait rather than the scan is what pushes a
-  job past that, raise `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` or add replicas
-  rather than the scan timeout.
+  `harbor_scanner_waybill_scan_duration_seconds`. If the wait rather than the
+  scan is what makes reports late, the worker pool is undersized: add replicas
+  or raise `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` (see the memory sizing rule
+  below first), not the scan timeout.
+- `harbor_scanner_waybill_scans_total{category="Expired"}` above zero is the hard
+  capacity signal: jobs are waiting longer than
+  `SCANNER_STORE_REDIS_SCAN_JOB_TTL`, so their records expire before a worker
+  reaches them and Harbor's poll 404s.
+
+### How long Harbor will actually wait
+
+Harbor polls the report endpoint every `Refresh-After` seconds and, contrary to a
+common reading of its source, does **not** give up after 30 minutes.
+`src/pkg/scan/job.go` places `case <-time.After(checkTimeout)` *inside* the
+`for { select {...} }`, so a fresh 30-minute timer is created on every iteration
+and is discarded on the next 302. (Compare `src/pkg/p2p/preheat/job.go`, which
+starts its timer outside the loop and is a real overall timeout.) The 30 minutes
+therefore bound the gap between responses, not the total wait, and there is no
+jobservice-level cap on a scan job either.
+
+So the effective deadline on a queued job is **this adapter's**
+`SCANNER_STORE_REDIS_SCAN_JOB_TTL` (default 1h). Once it elapses the record is
+gone, the report GET 404s, and Harbor fails the scan. The invariant to hold is:
+
+```
+ScanJobTTL  >  worst-case queue wait  +  worst-case scan duration
+```
+
+A job that expires while queued is detected on its first status write, before the
+registry pull, so an overloaded adapter does not spend egress and CPU producing
+reports with nowhere to go. It is counted as `category="Expired"` rather than as
+an adapter or scanner failure.
+
+Note `Refresh-After` is parsed with `strconv.ParseInt(v, 10, 8)`
+(`src/pkg/scan/rest/v1/client.go`), so a value above 127 fails to parse and Harbor
+silently falls back to 5 seconds.
+
+### Memory sizing
+
+Measured on the devenv (arm64, one scan at a time, disk-backed work dir):
+
+| Image | Compressed | Limit | Result | Peak RSS | Duration |
+|---|---|---|---|---|---|
+| `alpine:3.20` | 4 MB | 2Gi | 200, 16 packages | 41 MiB | 3s |
+| `golang:1.24` | 316 MB | **1Gi** | **OOMKilled**, 500 | 883 MiB (ceiling) | 6s |
+| `golang:1.24` | 316 MB | 2Gi | 200, 1355 packages | 1.32 GiB | 40s |
+| `golang:1.24` | 316 MB | 4Gi | 200, 1355 packages | 1.28 GiB | 37s |
+| `nvidia/cuda:12.6.3-devel` | 3.7 GB | **4Gi** | **OOMKilled**, 500 | 3.68 GiB (ceiling) | 16s |
+| `nvidia/cuda:12.6.3-devel` | 3.7 GB | **7Gi** | **OOMKilled**, 500 | 6.94 GiB (ceiling) | 30s |
+
+waybill holds layer content in memory while pulling, so peak tracks image size at
+roughly 4x the compressed bytes and is not bounded by anything. The `golang:1.24`
+row settles at 1.32 GiB whatever headroom it is given; the cuda rows consume
+every byte available and are still killed, which puts their requirement above
+7 GiB (~15 GiB by the 4x rule, untestable on a 7.7 GiB Docker VM).
+
+Two consequences:
+
+```
+memory limit  ≈  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY  ×  4 × (largest expected compressed image)
+```
+
+1. **`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` stays at `1`.** Raising it multiplies
+   the requirement. Scale with replicas, which spread memory across pods.
+2. **No fixed limit is safe against an arbitrary image.** There is no pre-pull
+   size cap, and the kill lands on the container, not on the one scan: at
+   concurrency above 1 or with a long-running pod, one oversized image takes every
+   in-flight scan down with it.
+
+Also note a `tmpfs` work dir is RAM-backed and charged to the same limit. Use a
+disk-backed `emptyDir`, never `emptyDir.medium: Memory`. Alert on
+`container_memory_working_set_bytes` against the limit alongside the metrics
+above.
 
 ## How the report is stored
 

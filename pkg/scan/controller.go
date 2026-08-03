@@ -77,13 +77,22 @@ func (c *controller) Scan(ctx context.Context, scanJobKey job.ScanJobKey, reques
 
 	if err != nil {
 		errMsg := err.Error()
+		// A vanished record is a capacity symptom, not a scan failure, and there
+		// is nothing left to write the Failed status to — attempting it would
+		// only fail again with the same cause. Harbor is already polling a key
+		// that 404s, which is how it learns the scan is gone.
+		if errors.Is(err, persistence.ErrJobNotFound) {
+			slog.Warn("Scan job record is gone; it outlived the scan job TTL while queued",
+				slog.String("scan_job_id", scanJobKey.ID), slog.String("err", errMsg))
+			return nil
+		}
 		slog.Error("Scan failed", slog.String("scan_job_id", scanJobKey.ID), slog.String("err", errMsg))
 		// Detach from ctx: the per-job deadline may already have fired (that is
 		// precisely how most failures arrive), and the Failed write must still land.
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
 		defer cancel()
 		if uErr := c.store.UpdateStatus(writeCtx, scanJobKey, job.Failed, errMsg); uErr != nil {
-			return xerrors.Errorf("updating scan job as failed: %v", uErr)
+			return xerrors.Errorf("updating scan job as failed: %w", uErr)
 		}
 	}
 	return nil
@@ -101,7 +110,10 @@ func errorCategory(err error) string {
 	if errors.As(err, &wErr) {
 		return string(wErr.Category)
 	}
-	return "Adapter"
+	if errors.Is(err, persistence.ErrJobNotFound) {
+		return metrics.CategoryExpired
+	}
+	return metrics.CategoryAdapter
 }
 
 func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *harbor.ScanRequest) (err error) {
@@ -116,7 +128,7 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 	}
 
 	if err = c.store.UpdateStatus(ctx, scanJobKey, job.Pending); err != nil {
-		return xerrors.Errorf("updating scan job status: %v", err)
+		return xerrors.Errorf("updating scan job status: %w", err)
 	}
 
 	imageRef, insecure, err := req.GetImageRef()
@@ -131,7 +143,7 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 
 	jobDir, err := os.MkdirTemp(c.workDir, "scan-*")
 	if err != nil {
-		return xerrors.Errorf("creating job workdir: %v", err)
+		return xerrors.Errorf("creating job workdir: %w", err)
 	}
 	defer func() {
 		if rmErr := os.RemoveAll(jobDir); rmErr != nil {
@@ -156,7 +168,7 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
 	defer cancel()
 	if err = c.store.Finish(writeCtx, scanJobKey, envelope); err != nil {
-		return xerrors.Errorf("saving scan report: %v", err)
+		return xerrors.Errorf("saving scan report: %w", err)
 	}
 	return nil
 }
@@ -171,7 +183,7 @@ func (c *controller) buildEnvelope(req *harbor.ScanRequest, sbom json.RawMessage
 	}
 	raw, err := json.Marshal(report)
 	if err != nil {
-		return nil, xerrors.Errorf("marshaling report envelope: %v", err)
+		return nil, xerrors.Errorf("marshaling report envelope: %w", err)
 	}
 	return raw, nil
 }

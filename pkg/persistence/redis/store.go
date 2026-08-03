@@ -56,7 +56,7 @@ func (s *store) update(ctx context.Context, scanJob job.ScanJob) error {
 		return xerrors.Errorf("updating scan job: %w", err)
 	}
 	if !updated {
-		return xerrors.Errorf("updating scan job (%s): key missing or expired", scanJob.Key.String())
+		return xerrors.Errorf("updating scan job (%s): %w", scanJob.Key.String(), persistence.ErrJobNotFound)
 	}
 	return nil
 }
@@ -82,7 +82,7 @@ func (s *store) UpdateStatus(ctx context.Context, scanJobKey job.ScanJobKey, new
 		return err
 	}
 	if scanJob == nil {
-		return xerrors.Errorf("scan job (%s) not found", scanJobKey.String())
+		return xerrors.Errorf("scan job (%s): %w", scanJobKey.String(), persistence.ErrJobNotFound)
 	}
 	scanJob.Status = newStatus
 	if len(errorMsg) > 0 {

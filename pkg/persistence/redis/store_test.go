@@ -130,8 +130,7 @@ func TestFinishStoresReportAndStatus(t *testing.T) {
 func TestFinishFailsOnExpiredKey(t *testing.T) {
 	_, s, _ := newTestStore(t)
 	err := s.Finish(context.Background(), testKey(), json.RawMessage(`{}`))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing or expired")
+	require.ErrorIs(t, err, persistence.ErrJobNotFound)
 }
 
 // TestStoredRecordIsCompressed measures the on-the-wire saving rather than

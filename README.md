@@ -93,13 +93,16 @@ default on). Alongside the Go runtime defaults:
 `category` is the `waybill.ErrorCategory` of the failure, which is the label that
 separates a broken scanner from a misconfigured registration:
 `RegistryPullAuth` (credentials rejected), `RegistryPullTransport` (TLS or scheme),
-`RegistryPull`, `Timeout`, `WaybillExec`, and `Adapter` for failures the adapter
-raised itself.
+`RegistryPull`, `Timeout`, `WaybillExec`, plus `Adapter` for failures the adapter
+raised itself and `Expired` for a job that waited longer than
+`SCANNER_STORE_REDIS_SCAN_JOB_TTL`.
 
-Two signals worth alerting on: a rising `queue_wait_seconds` means the worker
-pool is too small for the rate Harbor dispatches at, and a `scan_duration_seconds`
-tail past 1800s is work Harbor has already abandoned, since it stops polling for
-a report after 30 minutes.
+Worth alerting on: any `category="Expired"` (jobs are aging out of the store
+before a worker reaches them), and a rising `queue_wait_seconds` (the worker pool
+is too small for the rate Harbor dispatches at). See `docs/INTEGRATION.md` for the
+TTL invariant and the memory sizing rule — raising
+`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` multiplies peak memory, so replicas are
+usually the right answer.
 
 `/metrics` is served outside the `/api/v1` prefix, so `SCANNER_API_AUTH_API_KEY`
 does not protect it. Keep it off the ingress.

@@ -50,7 +50,7 @@ func (s *store) UpdateStatus(_ context.Context, scanJobKey job.ScanJobKey, newSt
 	key := scanJobKey.String()
 	j, ok := s.jobs[key]
 	if !ok {
-		return xerrors.Errorf("scan job (%s) not found", key)
+		return xerrors.Errorf("scan job (%s): %w", key, persistence.ErrJobNotFound)
 	}
 	j.Status = newStatus
 	if len(errorMsg) > 0 {
@@ -66,7 +66,7 @@ func (s *store) Finish(_ context.Context, scanJobKey job.ScanJobKey, report json
 	key := scanJobKey.String()
 	j, ok := s.jobs[key]
 	if !ok {
-		return xerrors.Errorf("scan job (%s) not found", key)
+		return xerrors.Errorf("scan job (%s): %w", key, persistence.ErrJobNotFound)
 	}
 	j.Report = report
 	j.Status = job.Finished

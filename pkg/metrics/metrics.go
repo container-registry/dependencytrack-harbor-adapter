@@ -12,10 +12,21 @@ import (
 
 const namespace = "harbor_scanner_waybill"
 
-// CategoryNone is the category label on a successful scan. Prometheus wants a
-// consistent label set across a metric, so success carries an explicit value
-// rather than an empty string.
-const CategoryNone = "none"
+// Category label values that do not come from waybill.ErrorCategory.
+const (
+	// CategoryNone is the category on a successful scan. Prometheus wants a
+	// consistent label set across a metric, so success carries an explicit
+	// value rather than an empty string.
+	CategoryNone = "none"
+	// CategoryAdapter is a failure the adapter raised itself. Kept apart from
+	// WaybillExec so an adapter bug is not blamed on the scanner.
+	CategoryAdapter = "Adapter"
+	// CategoryExpired is a job whose store record was gone by the time it ran:
+	// it waited longer than the scan job TTL. That is a capacity signal —
+	// raise concurrency, add replicas, or raise the TTL — not a failure of
+	// either the adapter or waybill, so it does not pollute either count.
+	CategoryExpired = "Expired"
+)
 
 // Outcome label values for ScansTotal / ScanDurationSeconds.
 const (

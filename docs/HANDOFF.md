@@ -283,8 +283,12 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
                     initialDelaySeconds: 5
                     periodSeconds: 20
                   resources:
-                    requests: { cpu: 50m, memory: 128Mi }
-                    limits:   { cpu: "1",  memory: 1Gi }
+                    # 1Gi was measured to OOM-kill a golang:1.24 scan (peak 1.32 GiB).
+                    # waybill holds layer content in memory during the pull, so peak
+                    # tracks ~4x the compressed image size. 2Gi covers ~500 MB
+                    # compressed at concurrency 1; scale with replicas, not concurrency.
+                    requests: { cpu: 50m, memory: 256Mi }
+                    limits:   { cpu: "1",  memory: 2Gi }
               volumes:
                 - name: work
                   emptyDir:
@@ -397,10 +401,38 @@ Blocker/major (address before scaling beyond single-replica demo):
   registry). Note `/metrics` sits outside `/api/v1`, so the API key does not protect it.
   (M3/M4/M5)
 - **Throughput mismatch.** Adapter is serial (concurrency 1) while Harbor jobservice runs
-  many scan jobs in parallel, each polling ≤30 min; jobs whose wait exceeds 30 min are
-  abandoned by Harbor but still fully executed by the adapter (wasted CPU/egress). Fix:
-  document sizing rule in `docs/INTEGRATION.md`, consider raising default concurrency, or
-  skip jobs older than Harbor's 30-min budget. (M5)
+  many scan jobs in parallel. **Two parts of the earlier framing were wrong; verified
+  against Harbor `4698e3642`:**
+  1. Harbor does *not* abandon a poll after 30 minutes. `src/pkg/scan/job.go:266` puts
+     `case <-time.After(checkTimeout)` inside the `for { select {} }`, so the timer is
+     recreated on every 302 and only fires if a single poll takes 30 minutes. There is no
+     jobservice-level cap either. (`src/pkg/p2p/preheat/job.go:175` is the correct pattern,
+     timer outside the loop, and its comment says "overall timeout".) The real bound on a
+     queued job is this adapter's `ScanJobTTL`.
+  2. An over-waited job is *not* fully executed. `controller.scan`'s first action is the
+     `Pending` status write, which fails on a vanished record, so the abort happens before
+     the pull. Pinned by `TestExpiredJobSkipsThePull`.
+  What remains: expiry is now a distinct `category="Expired"` metric instead of being
+  logged as a generic failure and counted as an adapter bug, and the TTL invariant
+  (`ScanJobTTL > queue wait + scan duration`) is documented in `docs/INTEGRATION.md`.
+  Raising the concurrency default is blocked on memory, not on Harbor: see the next item.
+  (M5)
+- **Memory limit is too small, and scales with image size.** Measured on the devenv
+  (arm64, concurrency 1, disk-backed work dir; full table in `docs/INTEGRATION.md`):
+  `alpine:3.20` (4 MB compressed) peaks at 41 MiB; `golang:1.24` (316 MB, 1355 packages)
+  peaks at **1.32 GiB** and is **OOM-killed at the shipped 1Gi limit** (`waybill exit -1`,
+  `OOMKilled=true`, 6s in); `nvidia/cuda:12.6.3-devel` (3.7 GB) is **still OOM-killed at
+  7Gi**, consuming every byte given to it. Peak tracks roughly 4x the compressed image
+  size, because waybill holds layer content in memory during the pull, and nothing bounds
+  it. Actions taken: deployment limit raised 1Gi → 2Gi (requests 128Mi → 256Mi);
+  `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` deliberately left at 1, since concurrency
+  multiplies the requirement — scale with replicas; sizing rule documented. Still open, and
+  now the top correctness gap: **a pre-pull size cap is mandatory, not a nice-to-have.** No
+  fixed limit survives an arbitrary image, and the kill lands on the container rather than
+  the job, so one oversized image takes every in-flight scan down with it. Probe the
+  manifest, sum the layer sizes, and reject above a configurable cap with a typed error.
+  Also do not back the work dir with tmpfs (RAM-backed, charged to the same limit) — the
+  e2e compose overlay does, which is fine for its alpine fixtures only. (M4/M5)
 
 Minor (correctness/cost hygiene):
 - Harbor parses `Refresh-After` as int8 (>127 silently falls back to 5s polling); keep the
