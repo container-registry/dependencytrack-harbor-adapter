@@ -35,6 +35,12 @@ services:
     # mode=1777 is load-bearing: the daemon's default tmpfs mode otherwise decides
     # whether uid 65532 can create the work dir (Docker Desktop allows it, the Linux
     # engine does not). Size caps the RAM-backed work dir.
+    #
+    # This tmpfs is RAM, and waybill's own peak is roughly 4x the compressed image
+    # size on top of it (measured: 1.32 GiB for golang:1.24). Scanning anything
+    # beyond small fixtures here needs several GB free. Production uses a
+    # disk-backed emptyDir instead; see the memory sizing table in
+    # docs/INTEGRATION.md.
     tmpfs:
       - /home/scanner:size=2G,mode=1777
     ports:
