@@ -36,7 +36,10 @@ const (
 	// ParseInt(v,10,8), so it MUST be <= 127 (plan m4). 5 seconds.
 	refreshAfter = "5"
 
-	vcsURL = "https://github.com/container-registry/waybill-harbor-adapter"
+	// The repository as it exists today. The rename to waybill-harbor-adapter is
+	// pending; GitHub will redirect this URL once it lands, so the value Harbor
+	// surfaces resolves either way.
+	vcsURL = "https://github.com/container-registry/mikebom-harbor-adapter"
 )
 
 // ReadyFunc reports readiness (Redis reachable, waybill exec-able). 503 on error.

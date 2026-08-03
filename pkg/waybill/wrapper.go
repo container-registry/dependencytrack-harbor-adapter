@@ -175,7 +175,11 @@ func (w *wrapper) scanArgs(target ScanTarget, jobDir, reportPath string) []strin
 		args = append(args, "--offline")
 	}
 	if w.cfg.Timeout > 0 {
-		args = append(args, "--timeout", strconv.Itoa(int(w.cfg.Timeout.Seconds())))
+		// waybill's --timeout is whole seconds, and 0 means "no limit" to it. A
+		// configured sub-second timeout truncating to 0 would silently remove the
+		// limit rather than tighten it, so clamp up.
+		seconds := max(int(w.cfg.Timeout.Seconds()), 1)
+		args = append(args, "--timeout", strconv.Itoa(seconds))
 	}
 
 	args = append(args,

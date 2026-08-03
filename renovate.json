@@ -35,9 +35,9 @@
   ],
   "packageRules": [
     {
-      "description": "A waybill pin bump is a runtime behavior change; release it as a patch (fix).",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/kusari-oss/waybill"],
+      "description": "A waybill pin bump is a runtime behavior change; release it as a patch (fix). Matches the github-releases datasource the versions.env custom manager actually emits -- the pin is a release tarball, not the (private) GHCR package.",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["kusari-oss/waybill"],
       "semanticCommitType": "fix",
       "commitMessageTopic": "waybill",
       "addLabels": ["waybill"]

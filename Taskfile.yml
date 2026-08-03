@@ -281,13 +281,23 @@ tasks:
   # ============================================================================
 
   run:
-    desc: "Run the adapter locally with debug logging (requires redis + waybill in PATH)"
+    desc: "Run the adapter locally with debug logging (requires redis + waybill on PATH)"
     vars:
       RUN_TMP:
         sh: echo "${TMPDIR:-/tmp/}"
+      # SCANNER_WAYBILL_BINARY defaults to the absolute /usr/local/bin/waybill the
+      # image ships, so a waybill merely on PATH would not be found. Resolve it
+      # here. `task build:waybill` is deliberately not used: it stages a
+      # linux-<arch> binary for the image, which will not exec on a macOS host.
+      WAYBILL_BIN:
+        sh: command -v waybill || true
+    preconditions:
+      - sh: '[ -n "{{.WAYBILL_BIN}}" ]'
+        msg: "waybill not found on PATH. Install it from https://github.com/kusari-oss/waybill/releases (WAYBILL_CLI_VERSION in versions.env is the pin), or set SCANNER_WAYBILL_BINARY yourself."
     env:
       SCANNER_LOG_LEVEL: debug
       SCANNER_REDIS_URL: redis://localhost:6379
+      SCANNER_WAYBILL_BINARY: '{{.WAYBILL_BIN}}'
       SCANNER_WAYBILL_WORK_DIR: '{{.RUN_TMP}}waybill-harbor-adapter/work'
     cmds:
       - mkdir -p "$SCANNER_WAYBILL_WORK_DIR"

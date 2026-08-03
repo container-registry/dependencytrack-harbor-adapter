@@ -20,9 +20,13 @@ FROM ${BASE_IMAGE}
 
 ARG TARGETARCH
 
+# image.source must be a URL that resolves at build time, so it names the
+# repository as it exists today. The GitHub repo rename to waybill-harbor-adapter
+# is still pending; once it lands GitHub redirects this URL to the new name, so
+# published images keep a working provenance link either way.
 LABEL org.opencontainers.image.title="waybill-harbor-adapter" \
       org.opencontainers.image.description="Harbor Pluggable Scanner Adapter that generates SBOMs using waybill" \
-      org.opencontainers.image.source="https://github.com/container-registry/waybill-harbor-adapter" \
+      org.opencontainers.image.source="https://github.com/container-registry/mikebom-harbor-adapter" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 # waybill CLI (Apache-2.0) plus its LICENSE, redistributed unmodified (see NOTICE).

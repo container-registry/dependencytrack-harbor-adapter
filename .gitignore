@@ -15,3 +15,7 @@ coverage.txt
 # Directory Cache Files
 .DS_Store
 thumbs.db
+
+# npm artifacts from the settings workflow's `npm ci` (package.json and
+# package-lock.json ARE committed; the installed tree is not).
+/node_modules/

@@ -8,7 +8,8 @@ Bundled third-party software
 --------------------------------------------------------------------------------
 
 This product's container image bundles the waybill SBOM CLI binary, redistributed
-unmodified from the upstream release image.
+unmodified from the upstream release tarball (checksum-verified at build time
+against the release's own SHA256SUMS; see versions.env and Taskfile.yml).
 
   waybill
   Copyright (c) The Kusari contributors

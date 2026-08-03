@@ -127,6 +127,99 @@ func TestBacklogLargerThanPubSubBufferIsNotDropped(t *testing.T) {
 		"every enqueued job must be delivered; got %d of %d", ctrl.count(), jobs)
 }
 
+// TestQueueIsFIFO pins that the producer and consumer use opposite ends of the
+// list. RPUSH with BRPOP would take from the same end, making the queue a LIFO
+// stack: under a steady arrival rate the oldest scan is never reached, and
+// Harbor polls it until the TTL. Single worker so the order observed is the
+// order dequeued.
+func TestQueueIsFIFO(t *testing.T) {
+	_, rdb := newTestRedis(t)
+	const ns = "test.ns"
+	const jobs = 10
+
+	enq := &enqueuer{namespace: ns, rdb: rdb, store: noopStore{}}
+	for i := 0; i < jobs; i++ {
+		j := Job{
+			Name: scanArtifactJobName,
+			Key:  job.ScanJobKey{ID: fmt.Sprintf("job-%d", i), MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX},
+			Args: Args{ScanRequest: &harbor.ScanRequest{}},
+		}
+		require.NoError(t, enq.enqueue(context.Background(), j, jobpkgScanJob(j)))
+	}
+
+	ctrl := &countingController{}
+	w := NewWorker(etc.JobQueue{Namespace: ns, WorkerConcurrency: 1}, time.Minute, rdb, ctrl)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+	t.Cleanup(w.Stop)
+
+	require.Eventually(t, func() bool { return ctrl.count() == jobs }, 30*time.Second, 20*time.Millisecond)
+
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	for i, k := range ctrl.keys {
+		assert.Equal(t, fmt.Sprintf("job-%d", i), k.ID, "job %d was dequeued out of order (queue is not FIFO)", i)
+	}
+}
+
+// TestStopIsBoundedWhileScanning pins that SIGTERM is not held hostage by an
+// in-flight scan. Stop() waits on the worker WaitGroup, and a worker mid-scan
+// does not return to the consume loop until runJob finishes -- up to the full
+// LockTTL. Without a bound, shutdown stalls until the orchestrator SIGKILLs.
+func TestStopIsBoundedWhileScanning(t *testing.T) {
+	_, rdb := newTestRedis(t)
+	const ns = "test.ns"
+
+	enq := &enqueuer{namespace: ns, rdb: rdb, store: noopStore{}}
+	j := Job{
+		Name: scanArtifactJobName,
+		Key:  job.ScanJobKey{ID: "slow", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX},
+		Args: Args{ScanRequest: &harbor.ScanRequest{}},
+	}
+	require.NoError(t, enq.enqueue(context.Background(), j, jobpkgScanJob(j)))
+
+	started := make(chan struct{})
+	ctrl := &blockingController{started: started, release: make(chan struct{})}
+	// LockTTL an hour out: without the Stop() bound the test would hang here.
+	w := NewWorker(etc.JobQueue{Namespace: ns, WorkerConcurrency: 1}, time.Hour, rdb, ctrl)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
+	select {
+	case <-started:
+	case <-time.After(20 * time.Second):
+		t.Fatal("scan never started")
+	}
+
+	done := make(chan struct{})
+	go func() { w.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(stopTimeout + 15*time.Second):
+		t.Fatal("Stop() did not return within its own timeout while a scan was in flight")
+	}
+	close(ctrl.release)
+}
+
+// blockingController parks inside Scan until released, but honors ctx
+// cancellation the way controller.Scan does through the waybill subprocess.
+type blockingController struct {
+	startOnce sync.Once
+	started   chan struct{}
+	release   chan struct{}
+}
+
+func (c *blockingController) Scan(ctx context.Context, _ job.ScanJobKey, _ *harbor.ScanRequest) error {
+	c.startOnce.Do(func() { close(c.started) })
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
 // noopStore satisfies persistence.Store for the enqueue path; these tests care
 // only about the queue transport, not the store.
 type noopStore struct{}

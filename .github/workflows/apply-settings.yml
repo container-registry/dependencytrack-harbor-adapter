@@ -32,11 +32,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned to an exact version rather than a floating tag: this step runs with
-      # a token that can rewrite repository settings, so the dependency it pulls in
-      # is part of that trust boundary.
+      # `npm ci` from the committed package-lock.json, not an ad-hoc
+      # `npm install <pkg>`: this step runs with a token that can rewrite
+      # repository settings, so the dependency it pulls in is part of that trust
+      # boundary and has to be integrity-pinned. --ignore-scripts because nothing
+      # here needs a package lifecycle hook.
       - name: Install js-yaml
-        run: npm install --no-save --ignore-scripts js-yaml@4.1.0
+        run: npm ci --ignore-scripts
 
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
         env:

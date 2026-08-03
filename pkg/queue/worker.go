@@ -15,10 +15,19 @@ import (
 	"github.com/container-registry/waybill-harbor-adapter/pkg/scan"
 )
 
-// brpopTimeout is how long a worker blocks on BRPOP before looping. It only sets
-// how quickly a worker notices Stop() / ctx cancellation; the queue itself is
-// push-driven, so a longer value costs nothing but responsiveness at shutdown.
-const brpopTimeout = 5 * time.Second
+// popTimeout is how long a worker blocks on BLPOP before looping. It only sets
+// how quickly an idle worker notices Stop() / ctx cancellation; the queue itself
+// is push-driven, so a longer value costs nothing but responsiveness at shutdown.
+const popTimeout = 5 * time.Second
+
+// stopTimeout bounds Stop(). A worker in the middle of a scan does not return to
+// the consume loop until runJob finishes, which can take the full LockTTL
+// (5m30s by default). The signal handler calls Stop() directly, so waiting for
+// that unconditionally would stall SIGTERM until the orchestrator escalates to
+// SIGKILL. Past this deadline Stop() returns and lets the process exit; the
+// abandoned job stays Pending until its TTL, which is the same outcome as the
+// SIGKILL it would otherwise wait for.
+const stopTimeout = 10 * time.Second
 
 type Worker interface {
 	Start(ctx context.Context)
@@ -37,6 +46,9 @@ type worker struct {
 	stopOnce sync.Once
 	stop     chan struct{}
 	done     sync.WaitGroup
+	// cancel aborts the context handed to in-flight scans, so Stop() tears down
+	// the waybill subprocess rather than waiting out its timeout.
+	cancel context.CancelFunc
 
 	controller scan.Controller
 }
@@ -52,7 +64,7 @@ func NewWorker(config etc.JobQueue, lockTTL time.Duration, rdb *redis.Client, co
 	}
 }
 
-// Start runs `concurrency` consumers, each blocking on its own BRPOP against the
+// Start runs `concurrency` consumers, each blocking on its own BLPOP against the
 // shared job list.
 //
 // This is deliberately a Redis list, not Pub/Sub. Pub/Sub drops a job whenever
@@ -62,8 +74,9 @@ func NewWorker(config etc.JobQueue, lockTTL time.Duration, rdb *redis.Client, co
 // scanArtifact holds the reader loop for the whole scan. In both cases the store
 // record stays Queued and Harbor 302-polls a job no worker will ever pick up,
 // until the TTL expires. A list has neither failure mode: RPUSH persists, and
-// BRPOP hands each entry to exactly one consumer whenever one shows up.
+// BLPOP hands each entry to exactly one consumer whenever one shows up.
 func (w *worker) Start(ctx context.Context) {
+	ctx, w.cancel = context.WithCancel(ctx)
 	for i := 0; i < w.concurrency; i++ {
 		w.done.Add(1)
 		go func() {
@@ -75,9 +88,25 @@ func (w *worker) Start(ctx context.Context) {
 
 func (w *worker) Stop() {
 	slog.Debug("Job queue shutdown started")
-	w.stopOnce.Do(func() { close(w.stop) })
-	w.done.Wait()
-	slog.Debug("Job queue shutdown completed")
+	w.stopOnce.Do(func() {
+		close(w.stop)
+		if w.cancel != nil {
+			w.cancel()
+		}
+	})
+
+	drained := make(chan struct{})
+	go func() {
+		w.done.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		slog.Debug("Job queue shutdown completed")
+	case <-time.After(stopTimeout):
+		slog.Warn("Job queue shutdown timed out; abandoning in-flight scans",
+			slog.Duration("timeout", stopTimeout))
+	}
 }
 
 func (w *worker) consume(ctx context.Context) {
@@ -91,10 +120,10 @@ func (w *worker) consume(ctx context.Context) {
 		default:
 		}
 
-		res, err := w.rdb.BRPop(ctx, brpopTimeout, key).Result()
+		res, err := w.rdb.BLPop(ctx, popTimeout, key).Result()
 		if err != nil {
 			if errors.Is(err, redis.Nil) {
-				continue // BRPOP timed out with an empty list: normal idle.
+				continue // BLPOP timed out with an empty list: normal idle.
 			}
 			if ctx.Err() != nil {
 				return
@@ -107,13 +136,13 @@ func (w *worker) consume(ctx context.Context) {
 				return
 			case <-ctx.Done():
 				return
-			case <-time.After(brpopTimeout):
+			case <-time.After(popTimeout):
 			}
 			continue
 		}
-		// BRPOP returns [key, value].
+		// BLPOP returns [key, value].
 		if len(res) != 2 {
-			slog.Error("Unexpected BRPOP response", slog.Int("len", len(res)))
+			slog.Error("Unexpected BLPOP response", slog.Int("len", len(res)))
 			continue
 		}
 		if err := w.scanArtifact(ctx, res[1]); err != nil {
@@ -128,7 +157,7 @@ func (w *worker) scanArtifact(ctx context.Context, payload string) error {
 		return xerrors.Errorf("unmarshaling scan request: %w", err)
 	}
 
-	// The lock is no longer what keeps two workers off one job — BRPOP already
+	// The lock is no longer what keeps two workers off one job — BLPOP already
 	// delivers each entry once. It stays as the guard against a duplicate
 	// enqueue of the same job key landing on two workers concurrently.
 	nx, err := w.rdb.SetNX(ctx, redisLockKey(w.namespace, j.ID()), "", w.lockTTL).Result()
