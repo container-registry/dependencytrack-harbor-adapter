@@ -3,16 +3,21 @@
 //
 // It exists because memory is the binding constraint and nothing else bounds it.
 // waybill holds layer content in memory during the pull, so peak RSS runs at
-// roughly 4x the compressed size: golang:1.24 (316 MB compressed) peaks at
-// 1.32 GiB, and nvidia/cuda:12.6.3-devel (3.7 GB) is still OOM-killed at a 7Gi
-// limit. The kill lands on the container, not on the job, so one oversized
-// artifact takes every in-flight scan down with it and the pod restarts. A cheap
-// manifest read turns that into one typed rejection.
+// ~4.5x the compressed size: golang:1.24 (316 MB) peaks at 1.32 GiB, node:22
+// (400 MB) at 1.65 GiB, and nvidia/cuda:12.6.3-devel (3.7 GB) is still
+// OOM-killed at a 7Gi limit. The kill lands on the container, not on the job, so
+// one oversized artifact takes every in-flight scan down with it and the pod
+// restarts. A cheap manifest read turns that into one typed rejection.
 //
 // This is a manifest request, not a pull: one GET of a few kilobytes, no blobs.
 // That is the whole reason go-containerregistry is acceptable back on the
 // runtime path after the switch to waybill's native pull removed it — the thing
 // that was expensive was fetching every layer twice, not reading a manifest.
+//
+// The registry is not trusted to be well-behaved. Sizes come from a document the
+// remote controls, so an under-reported total is a way to defeat the guard: every
+// descriptor is range-checked and the running total is overflow-checked, and
+// anything that cannot be measured is an error rather than a zero.
 package imageprobe
 
 import (
@@ -20,8 +25,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -30,6 +37,16 @@ import (
 
 	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
 )
+
+// maxIndexDepth bounds nested-index recursion. Nesting is legal but vanishingly
+// rare in practice; the bound is what stops a malicious registry from serving a
+// self-referential index and turning the guard into an infinite walk.
+const maxIndexDepth = 4
+
+// maxPlausibleSize is an upper bound on any single descriptor, well above any
+// real layer. A registry reporting more than this is malfunctioning or hostile,
+// and either way the artifact is far past any cap worth configuring.
+const maxPlausibleSize = int64(1) << 45 // 32 TiB
 
 // Target is the artifact to measure, with the credentials and transport the pull
 // would use. It mirrors waybill.ScanTarget rather than importing it, so the
@@ -50,22 +67,28 @@ type TooLargeError struct {
 }
 
 func (e *TooLargeError) Error() string {
+	// The memory estimate uses the measured ~4.5x ratio, and both knobs are
+	// named: raising the cap alone just moves the OOM back one artifact.
 	return fmt.Sprintf(
 		"artifact %s is %d compressed bytes, over the %d limit; scanning it needs roughly %d bytes of memory "+
 			"(raise SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit together)",
-		e.Ref, e.Size, e.Limit, 4*e.Size)
+		e.Ref, e.Size, e.Limit, e.Size*9/2)
 }
 
 // Prober measures an artifact without pulling it.
 type Prober interface {
 	// CompressedSize is the total size of the layers waybill would download. For
-	// a multi-platform index it is the largest single platform, since waybill
-	// pulls one.
+	// a multi-platform index it is the platform waybill will resolve: the one
+	// SCANNER_WAYBILL_IMAGE_PLATFORM names, or the largest when it names none.
 	CompressedSize(ctx context.Context, target Target) (int64, error)
 }
 
 type prober struct {
 	transport http.RoundTripper
+	// platform mirrors SCANNER_WAYBILL_IMAGE_PLATFORM. Without it the probe
+	// charges the largest child of an index, which would refuse an artifact
+	// whose selected platform is comfortably under the cap.
+	platform string
 }
 
 // New builds a Prober sharing the registry TLS settings the waybill wrapper
@@ -108,7 +131,7 @@ func New(cfg etc.Waybill) (Prober, error) {
 	transport := base.Clone()
 	transport.TLSClientConfig = tlsConfig
 
-	return &prober{transport: transport}, nil
+	return &prober{transport: transport, platform: strings.TrimSpace(cfg.ImagePlatform)}, nil
 }
 
 func (p *prober) CompressedSize(ctx context.Context, target Target) (int64, error) {
@@ -138,7 +161,11 @@ func (p *prober) CompressedSize(ctx context.Context, target Target) (int64, erro
 	}
 
 	if desc.MediaType.IsIndex() {
-		return indexSize(desc, remoteOpts)
+		idx, err := desc.ImageIndex()
+		if err != nil {
+			return 0, fmt.Errorf("reading index for %s: %w", target.Ref, err)
+		}
+		return p.indexSize(idx, 0)
 	}
 
 	img, err := desc.Image()
@@ -148,14 +175,16 @@ func (p *prober) CompressedSize(ctx context.Context, target Target) (int64, erro
 	return manifestSize(img)
 }
 
-// indexSize returns the largest platform in an index, not the sum: waybill
-// resolves one platform and pulls only that. Harbor normally fans a scan out to
-// the index's children and sends each child digest, so this path is the
-// exception rather than the rule.
-func indexSize(desc *remote.Descriptor, remoteOpts []remote.Option) (int64, error) {
-	idx, err := desc.ImageIndex()
-	if err != nil {
-		return 0, fmt.Errorf("reading index: %w", err)
+// indexSize returns the size of the platform waybill will pull, not the sum:
+// waybill resolves one platform. Harbor normally fans a scan out to the index's
+// children and sends each child digest, so this path is the exception.
+//
+// A nested index is measured by recursing, never skipped. Treating an
+// unmeasurable child as zero was a hole straight through the guard: the largest
+// child could be the one that contributes nothing to the total.
+func (p *prober) indexSize(idx v1.ImageIndex, depth int) (int64, error) {
+	if depth > maxIndexDepth {
+		return 0, fmt.Errorf("index nesting deeper than %d levels", maxIndexDepth)
 	}
 	manifest, err := idx.IndexManifest()
 	if err != nil {
@@ -164,22 +193,56 @@ func indexSize(desc *remote.Descriptor, remoteOpts []remote.Option) (int64, erro
 
 	var largest int64
 	for _, child := range manifest.Manifests {
-		if child.MediaType.IsIndex() {
-			continue // nested index: rare, and the children below still cover it
+		if p.platform != "" && child.Platform != nil && !platformMatches(p.platform, child.Platform) {
+			continue
 		}
-		img, err := idx.Image(child.Digest)
-		if err != nil {
-			return 0, fmt.Errorf("reading index child %s: %w", child.Digest, err)
+
+		var size int64
+		switch {
+		case child.MediaType.IsIndex():
+			nested, err := idx.ImageIndex(child.Digest)
+			if err != nil {
+				return 0, fmt.Errorf("reading nested index %s: %w", child.Digest, err)
+			}
+			if size, err = p.indexSize(nested, depth+1); err != nil {
+				return 0, err
+			}
+		case child.MediaType.IsImage():
+			img, err := idx.Image(child.Digest)
+			if err != nil {
+				return 0, fmt.Errorf("reading index child %s: %w", child.Digest, err)
+			}
+			if size, err = manifestSize(img); err != nil {
+				return 0, err
+			}
+		default:
+			// Attestations and signatures ride along in the index as non-image
+			// artifacts. waybill does not pull them for a scan.
+			continue
 		}
-		size, err := manifestSize(img)
-		if err != nil {
-			return 0, err
-		}
+
 		if size > largest {
 			largest = size
 		}
 	}
 	return largest, nil
+}
+
+// platformMatches compares an os/arch[/variant] string against an index child.
+// A configured platform that matches nothing leaves the caller measuring every
+// child, which over-estimates rather than under-estimates.
+func platformMatches(configured string, child *v1.Platform) bool {
+	parts := strings.Split(configured, "/")
+	if len(parts) < 2 {
+		return false
+	}
+	if parts[0] != child.OS || parts[1] != child.Architecture {
+		return false
+	}
+	if len(parts) > 2 && parts[2] != child.Variant {
+		return false
+	}
+	return true
 }
 
 // manifestSize sums the layer descriptors. Descriptor sizes come from the
@@ -189,9 +252,31 @@ func manifestSize(img v1.Image) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading manifest: %w", err)
 	}
-	total := manifest.Config.Size
-	for _, layer := range manifest.Layers {
-		total += layer.Size
+
+	total, err := addSize(0, manifest.Config.Size)
+	if err != nil {
+		return 0, fmt.Errorf("config descriptor: %w", err)
+	}
+	for i, layer := range manifest.Layers {
+		if total, err = addSize(total, layer.Size); err != nil {
+			return 0, fmt.Errorf("layer %d descriptor: %w", i, err)
+		}
 	}
 	return total, nil
+}
+
+// addSize accumulates a registry-supplied size defensively. A negative
+// descriptor would shrink the total and walk an oversized artifact straight past
+// the cap; an overflowing one would wrap it negative.
+func addSize(total, size int64) (int64, error) {
+	if size < 0 {
+		return 0, fmt.Errorf("negative size %d", size)
+	}
+	if size > maxPlausibleSize {
+		return 0, fmt.Errorf("implausible size %d", size)
+	}
+	if total > math.MaxInt64-size {
+		return 0, fmt.Errorf("total size overflows int64")
+	}
+	return total + size, nil
 }

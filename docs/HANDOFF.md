@@ -283,12 +283,16 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
                     initialDelaySeconds: 5
                     periodSeconds: 20
                   resources:
-                    # 1Gi was measured to OOM-kill a golang:1.24 scan (peak 1.32 GiB).
-                    # waybill holds layer content in memory during the pull, so peak
-                    # tracks ~4x the compressed image size. 2Gi covers ~500 MB
-                    # compressed at concurrency 1; scale with replicas, not concurrency.
-                    requests: { cpu: 50m, memory: 256Mi }
-                    limits:   { cpu: "1",  memory: 2Gi }
+                    # Measured, not guessed: waybill holds layer content in memory
+                    # during the pull, so peak RSS is ~4.5x the compressed image
+                    # size. 1Gi OOM-killed golang:1.24 (316 MB -> 1.32 GiB) and 2Gi
+                    # OOM-killed node:22 (400 MB -> 1.65 GiB). 4Gi pairs with the
+                    # 512 MiB SCANNER_WAYBILL_MAX_IMAGE_SIZE default: 512 MiB x 4.5
+                    # = 2.25 GiB peak, leaving 1.75 GiB spare. Move the two together.
+                    # Scale throughput with replicas, not WorkerConcurrency, which
+                    # multiplies this.
+                    requests: { cpu: 50m, memory: 512Mi }
+                    limits:   { cpu: "1",  memory: 4Gi }
               volumes:
                 - name: work
                   emptyDir:
@@ -419,11 +423,13 @@ Blocker/major (address before scaling beyond single-replica demo):
 - **Memory limit is too small, and scales with image size.** Measured on the devenv
   (arm64, concurrency 1, disk-backed work dir; full table in `docs/INTEGRATION.md`):
   `alpine:3.20` (4 MB compressed) peaks at 41 MiB; `golang:1.24` (316 MB, 1355 packages)
-  peaks at **1.32 GiB** and is **OOM-killed at the shipped 1Gi limit** (`waybill exit -1`,
-  `OOMKilled=true`, 6s in); `nvidia/cuda:12.6.3-devel` (3.7 GB) is **still OOM-killed at
-  7Gi**, consuming every byte given to it. Peak tracks roughly 4x the compressed image
-  size, because waybill holds layer content in memory during the pull, and nothing bounds
-  it. Actions taken: deployment limit raised 1Gi → 2Gi (requests 128Mi → 256Mi);
+  peaks at **1.32 GiB** and is **OOM-killed at the original 1Gi limit** (`waybill exit -1`,
+  `OOMKilled=true`, 6s in); `node:22` (400 MB, 1809 packages) peaks at **1.65 GiB** and is
+  **OOM-killed at 2Gi**; `nvidia/cuda:12.6.3-devel` (3.7 GB) is **still OOM-killed at
+  7Gi**, consuming every byte given to it. Peak tracks **~4.5x** the compressed image size
+  (4.49x and 4.44x on the two measured points), because waybill holds layer content in
+  memory during the pull, and nothing bounds it. Actions taken: deployment limit raised
+  1Gi → **4Gi** (requests 128Mi → 512Mi), paired with the 512 MiB size cap;
   `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` deliberately left at 1, since concurrency
   multiplies the requirement — scale with replicas; sizing rule documented. **FIXED:** `pkg/imageprobe`
   reads the manifest (one GET, no blobs) and `SCANNER_WAYBILL_MAX_IMAGE_SIZE` (default

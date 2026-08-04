@@ -186,20 +186,29 @@ Measured on the devenv (arm64, one scan at a time, disk-backed work dir):
 | `golang:1.24` | 316 MB | **1Gi** | **OOMKilled**, 500 | 883 MiB (ceiling) | 6s |
 | `golang:1.24` | 316 MB | 2Gi | 200, 1355 packages | 1.32 GiB | 40s |
 | `golang:1.24` | 316 MB | 4Gi | 200, 1355 packages | 1.28 GiB | 37s |
+| `node:22` | 400 MB | **2Gi** | **OOMKilled**, 500 | 1.57 GiB (ceiling) | 22s |
+| `node:22` | 400 MB | 3Gi | 200, 1809 packages | 1.65 GiB | 55s |
+| `node:22` | 400 MB | 4Gi | 200, 1809 packages | 1.75 GiB | 55s |
 | `nvidia/cuda:12.6.3-devel` | 3.7 GB | **4Gi** | **OOMKilled**, 500 | 3.68 GiB (ceiling) | 16s |
 | `nvidia/cuda:12.6.3-devel` | 3.7 GB | **7Gi** | **OOMKilled**, 500 | 6.94 GiB (ceiling) | 30s |
 
 waybill holds layer content in memory while pulling, so peak tracks image size at
-roughly 4x the compressed bytes and is not bounded by anything. The `golang:1.24`
-row settles at 1.32 GiB whatever headroom it is given; the cuda rows consume
-every byte available and are still killed, which puts their requirement above
-7 GiB (~15 GiB by the 4x rule, untestable on a 7.7 GiB Docker VM).
+**~4.5x** the compressed bytes (4.49x for golang, 4.44x for node) and is not
+bounded by anything. The successful rows settle at a fixed peak whatever headroom
+they are given; the killed rows consume every byte available, which puts the cuda
+requirement above 7 GiB (~15 GiB by the ratio, untestable on a 7.7 GiB Docker VM).
 
-Two consequences:
+Note `node:22` at 400 MB is an ordinary image, not a pathological one, and it
+OOM-kills a 2Gi container. Size the limit from the ratio, not from intuition:
 
 ```
-memory limit  ≈  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY  ×  4 × (largest expected compressed image)
+memory limit  >=  4.5  ×  SCANNER_WAYBILL_MAX_IMAGE_SIZE  ×  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY   (plus headroom)
 ```
+
+The shipped deployment pairs a **512 MiB** cap with a **4Gi** limit: 512 MiB ×
+4.5 = 2.25 GiB peak, leaving 1.75 GiB spare. **Move the two together** — raising
+the cap alone just moves the OOM back by one artifact, and raising the limit alone
+wastes it.
 
 1. **`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` stays at `1`.** Raising it multiplies
    the requirement. Scale with replicas, which spread memory across pods.

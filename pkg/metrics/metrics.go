@@ -101,11 +101,25 @@ var (
 	// ImageCompressedBytes is what the size cap is compared against, recorded
 	// for every artifact the probe could measure. It is the input to sizing
 	// both SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit.
+	// Buckets are explicit rather than exponential so there is a boundary at the
+	// 512 MiB default cap. A x4 progression jumps 256 MiB straight to 1 GiB,
+	// which lumps "just under the cap" together with "twice the cap" — exactly
+	// the distinction this metric exists to support.
 	ImageCompressedBytes = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace: namespace,
 		Name:      "image_compressed_bytes",
 		Help:      "Compressed size of the artifact as read from its manifest.",
-		Buckets:   prometheus.ExponentialBuckets(1<<20, 4, 8),
+		Buckets: []float64{
+			1 << 20, // 1 MiB
+			1 << 24, // 16 MiB
+			1 << 26, // 64 MiB
+			1 << 28, // 256 MiB
+			1 << 29, // 512 MiB, the default cap
+			1 << 30, // 1 GiB
+			1 << 31, // 2 GiB
+			1 << 32, // 4 GiB
+			1 << 34, // 16 GiB
+		},
 	})
 
 	// ReportBytes is measured on the stored (compressed) envelope, so it tracks
