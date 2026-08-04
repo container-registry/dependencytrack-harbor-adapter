@@ -180,6 +180,37 @@ func TestPlatformMatches(t *testing.T) {
 	assert.False(t, platformMatches("linux", linuxArm), "a malformed platform must not match everything")
 }
 
+// TestUnmatchedPlatformFallsBackToLargest is the regression pin for a guard
+// bypass: skipping every non-matching child left the total at zero when the
+// configured platform matched nothing, so an arbitrarily large artifact was
+// reported as 0 bytes and sailed through the cap.
+func TestUnmatchedPlatformFallsBackToLargest(t *testing.T) {
+	host := testRegistry(t)
+	big, err := random.Image(4096, 5)
+	require.NoError(t, err)
+	idx := mutate.AppendManifests(empty.Index, mutate.IndexAddendum{Add: big, Descriptor: v1.Descriptor{
+		Platform: &v1.Platform{OS: "linux", Architecture: "amd64"},
+	}})
+	ref := push(t, host, "nomatch", idx)
+
+	got, err := newProber(t, "linux/s390x").CompressedSize(context.Background(), Target{Ref: ref, Insecure: true})
+	require.NoError(t, err)
+
+	want, err := manifestSize(big)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "an unmatched platform must over-estimate, never report zero")
+}
+
+// TestEstimatedMemorySaturates: the estimate feeds operator guidance in the
+// rejection message, and a wrapped negative there is worse than no number.
+func TestEstimatedMemorySaturates(t *testing.T) {
+	assert.Equal(t, int64(470), EstimatedMemory(100))
+	assert.Equal(t, int64(0), EstimatedMemory(0))
+	assert.Equal(t, int64(0), EstimatedMemory(-5))
+	assert.Equal(t, int64(math.MaxInt64), EstimatedMemory(math.MaxInt64))
+	assert.Positive(t, EstimatedMemory(math.MaxInt64/2), "must never wrap negative")
+}
+
 func TestMissingArtifactIsAnError(t *testing.T) {
 	host := testRegistry(t)
 	_, err := newProber(t, "").CompressedSize(context.Background(), Target{

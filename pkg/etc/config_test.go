@@ -30,3 +30,30 @@ func TestNegativeMaxImageSizeIsRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SCANNER_WAYBILL_MAX_IMAGE_SIZE")
 }
+
+// TestPartialTLSIsRejected pins that a typo in one of two TLS secrets fails the
+// deployment instead of silently serving plaintext. IsTLSEnabled requires both,
+// so setting only one used to disable transport security without a word.
+func TestPartialTLSIsRejected(t *testing.T) {
+	for _, tc := range []struct{ name, cert, key string }{
+		{"cert without key", "/tmp/tls.crt", ""},
+		{"key without cert", "", "/tmp/tls.key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SCANNER_API_SERVER_TLS_CERTIFICATE", tc.cert)
+			t.Setenv("SCANNER_API_SERVER_TLS_KEY", tc.key)
+			_, err := GetConfig()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be set together")
+		})
+	}
+}
+
+// TestClientCAsWithoutTLSIsRejected: client certificates are only verified on a
+// TLS listener, so this combination silently verifies nothing.
+func TestClientCAsWithoutTLSIsRejected(t *testing.T) {
+	t.Setenv("SCANNER_API_SERVER_CLIENT_CAS", "/tmp/ca.pem")
+	_, err := GetConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires TLS")
+}

@@ -61,19 +61,19 @@ type Waybill struct {
 	// the pull starts. 0 disables the check.
 	//
 	// This is a memory guard, not a disk guard. waybill holds layer content in
-	// memory while pulling, so peak RSS runs at ~4.5x the compressed size and is
+	// memory while pulling, so peak RSS runs at ~4.7x the compressed size and is
 	// otherwise unbounded. Measured: golang:1.24 (316 MB) peaks at 1.32 GiB =
-	// 4.49x; node:22 (400 MB) peaks at 1.65 GiB = 4.44x and is OOM-killed at 2Gi;
+	// 4.49x; node:22 (400 MB) peaks at 1.75 GiB = 4.68x and is OOM-killed at 2Gi;
 	// nvidia/cuda (3.7 GB) is still OOM-killed at 7Gi. An OOM kills the container
 	// rather than the job, so without this cap a single oversized artifact takes
 	// every in-flight scan down with it.
 	//
 	// The cap and the container memory limit must be set together:
 	//
-	//	limit >= 4.5 x MaxImageSize x WorkerConcurrency, plus headroom
+	//	limit >= 4.7 x MaxImageSize x WorkerConcurrency, plus headroom
 	//
 	// This default is paired with the 4Gi limit the shipped deployment sets
-	// (512 MiB x 4.5 = 2.25 GiB peak, 1.75 GiB spare). Raising one without the
+	// (512 MiB x 4.7 = 2.35 GiB peak, 1.65 GiB spare). Raising one without the
 	// other reintroduces the OOM the cap exists to prevent.
 	MaxImageSize int64 `env:"SCANNER_WAYBILL_MAX_IMAGE_SIZE" envDefault:"536870912"`
 }
@@ -172,6 +172,17 @@ func (c Config) validate() error {
 	// shorter than any real scan.
 	if c.Waybill.Timeout <= 0 {
 		return fmt.Errorf("SCANNER_WAYBILL_TIMEOUT must be positive, got %s", c.Waybill.Timeout)
+	}
+	// Partial TLS is a typo in one of two secrets, and IsTLSEnabled requires
+	// both, so the old behavior was to silently serve plaintext -- the failure
+	// mode a deployment can least afford to have go unnoticed.
+	if (c.API.TLSCertificate == "") != (c.API.TLSKey == "") {
+		return fmt.Errorf("SCANNER_API_SERVER_TLS_CERTIFICATE and SCANNER_API_SERVER_TLS_KEY must be set together " +
+			"(only one is set; the server would silently start without TLS)")
+	}
+	if len(c.API.ClientCAs) > 0 && !c.API.IsTLSEnabled() {
+		return fmt.Errorf("SCANNER_API_SERVER_CLIENT_CAS requires TLS " +
+			"(SCANNER_API_SERVER_TLS_CERTIFICATE and SCANNER_API_SERVER_TLS_KEY); client certificates are never verified without it)")
 	}
 	if c.Waybill.MaxImageSize < 0 {
 		return fmt.Errorf("SCANNER_WAYBILL_MAX_IMAGE_SIZE must not be negative, got %d", c.Waybill.MaxImageSize)

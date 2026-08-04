@@ -102,9 +102,9 @@ raised itself, `Expired` for a job that waited longer than
 pre-pull size cap.
 
 **Memory is the binding constraint.** waybill holds layer content in memory while
-pulling, so peak RSS runs at ~4.5x the compressed image size and nothing else
+pulling, so peak RSS runs at ~4.7x the compressed image size and nothing else
 bounds it: `golang:1.24` (316 MB) peaks at 1.32 GiB, `node:22` (400 MB) at
-1.65 GiB and OOM-kills a 2Gi container, and a 3.7 GB image is OOM-killed even at
+1.75 GiB and OOM-kills a 2Gi container, and a 3.7 GB image is OOM-killed even at
 7Gi. Because the kill lands on the container, one oversized artifact takes every
 in-flight scan with it.
 
@@ -112,7 +112,7 @@ in-flight scan with it.
 container memory limit:
 
 ```
-memory limit  >=  4.5 × SCANNER_WAYBILL_MAX_IMAGE_SIZE × SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
+memory limit  >=  4.7 × SCANNER_WAYBILL_MAX_IMAGE_SIZE × SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
 ```
 
 The 512 MiB default is paired with the 4Gi limit the shipped deployment sets.

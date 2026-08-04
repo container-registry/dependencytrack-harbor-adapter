@@ -52,3 +52,22 @@ func TestMemoryStoreUpdateMissing(t *testing.T) {
 	s := NewStore()
 	require.Error(t, s.UpdateStatus(context.Background(), key(), job.Finished))
 }
+
+// TestGetReturnsAnIndependentReport pins that the returned record does not alias
+// the stored one. A struct copy still shares json.RawMessage's backing array, so
+// a caller writing through the returned report corrupted the store.
+func TestGetReturnsAnIndependentReport(t *testing.T) {
+	s := NewStore()
+	ctx := context.Background()
+	k := key()
+	require.NoError(t, s.Create(ctx, job.ScanJob{Key: k, Status: job.Queued}))
+	require.NoError(t, s.Finish(ctx, k, json.RawMessage(`{"a":1}`)))
+
+	got, err := s.Get(ctx, k)
+	require.NoError(t, err)
+	got.Report[2] = 'X' // mutate through the returned copy
+
+	again, err := s.Get(ctx, k)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"a":1}`, string(again.Report), "the stored report must be unaffected")
+}

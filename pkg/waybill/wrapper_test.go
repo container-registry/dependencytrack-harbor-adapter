@@ -26,6 +26,7 @@ const testImageRef = "core:8080/library/alpine@sha256:deadbeef"
 //	pullauth -> scan writes waybill's own 401 message to stderr, exit 1
 //	pulltls  -> scan writes waybill's own TLS-handshake message to stderr, exit 1
 //	hang     -> scan sleeps 30s (to exercise the ctx/backstop path)
+//	null     -> scan exits 0 but writes JSON "null" instead of a document
 //
 // The stub cannot read a mode from env (the wrapper strips the environment), so
 // the mode is baked into each generated script.
@@ -64,6 +65,7 @@ case "$MODE" in
   pullauth) echo "Error: registry returned 401 with Basic auth challenge for GET http://core:8080/v2/library/alpine/manifests/sha256:deadbeef, but no credentials are configured for this registry." 1>&2; exit 1 ;;
   pulltls) echo "Error: TLS handshake failed for GET https://core:8080/v2/library/alpine/manifests/sha256:deadbeef. If this registry uses plain HTTP, pass --insecure-registry core:8080." 1>&2; exit 1 ;;
   hang) sleep 30 ;;
+  null) printf 'null' > "$out"; exit 0 ;;
 esac
 
 cat > "$out" <<'JSON'
@@ -428,4 +430,15 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+// TestNullOutputIsRejected pins that a zero-exit waybill run which produced no
+// document is a failure. JSON "null" unmarshals into a nil map without error, so
+// the "is it an object" guard alone let this through and Harbor received a
+// report envelope with no SBOM in it.
+func TestNullOutputIsRejected(t *testing.T) {
+	w := NewWrapper(baseConfig(writeStub(t, "null")))
+	_, err := w.GenerateSBOM(context.Background(), ScanTarget{ImageRef: "core:8080/library/alpine@sha256:deadbeef"}, t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JSON null")
 }

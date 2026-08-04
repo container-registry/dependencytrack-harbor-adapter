@@ -284,11 +284,11 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
                     periodSeconds: 20
                   resources:
                     # Measured, not guessed: waybill holds layer content in memory
-                    # during the pull, so peak RSS is ~4.5x the compressed image
+                    # during the pull, so peak RSS is ~4.7x the compressed image
                     # size. 1Gi OOM-killed golang:1.24 (316 MB -> 1.32 GiB) and 2Gi
                     # OOM-killed node:22 (400 MB -> 1.65 GiB). 4Gi pairs with the
-                    # 512 MiB SCANNER_WAYBILL_MAX_IMAGE_SIZE default: 512 MiB x 4.5
-                    # = 2.25 GiB peak, leaving 1.75 GiB spare. Move the two together.
+                    # 512 MiB SCANNER_WAYBILL_MAX_IMAGE_SIZE default: 512 MiB x 4.7
+                    # = 2.35 GiB peak, leaving 1.65 GiB spare. Move the two together.
                     # Scale throughput with replicas, not WorkerConcurrency, which
                     # multiplies this.
                     requests: { cpu: 50m, memory: 512Mi }
@@ -424,10 +424,10 @@ Blocker/major (address before scaling beyond single-replica demo):
   (arm64, concurrency 1, disk-backed work dir; full table in `docs/INTEGRATION.md`):
   `alpine:3.20` (4 MB compressed) peaks at 41 MiB; `golang:1.24` (316 MB, 1355 packages)
   peaks at **1.32 GiB** and is **OOM-killed at the original 1Gi limit** (`waybill exit -1`,
-  `OOMKilled=true`, 6s in); `node:22` (400 MB, 1809 packages) peaks at **1.65 GiB** and is
+  `OOMKilled=true`, 6s in); `node:22` (400 MB, 1809 packages) peaks at **1.75 GiB** and is
   **OOM-killed at 2Gi**; `nvidia/cuda:12.6.3-devel` (3.7 GB) is **still OOM-killed at
-  7Gi**, consuming every byte given to it. Peak tracks **~4.5x** the compressed image size
-  (4.49x and 4.44x on the two measured points), because waybill holds layer content in
+  7Gi**, consuming every byte given to it. Peak tracks **~4.7x** the compressed image size
+  (4.49x for golang, 4.68x for node at its highest observed peak), because waybill holds layer content in
   memory during the pull, and nothing bounds it. Actions taken: deployment limit raised
   1Gi → **4Gi** (requests 128Mi → 512Mi), paired with the 512 MiB size cap;
   `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` deliberately left at 1, since concurrency

@@ -2,8 +2,12 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -90,4 +94,50 @@ func observationCount(t *testing.T, obs prometheus.Observer) uint64 {
 	var pb dto.Metric
 	require.NoError(t, m.Write(&pb))
 	return pb.GetHistogram().GetSampleCount()
+}
+
+// TestEnqueueFailsWhenNoJobWasCreated pins the accepted-but-nonexistent case: if
+// every produces-MIME is unsupported the fan-out loops run zero times, and
+// returning an ID handed Harbor a 202 for a job that does not exist, which it
+// then polled until the TTL.
+func TestEnqueueFailsWhenNoJobWasCreated(t *testing.T) {
+	_, rdb := newTestRedis(t)
+	enq := NewEnqueuer(etc.JobQueue{Namespace: "ns"}, rdb, noopStore{})
+
+	req := sbomRequest()
+	req.Capabilities[0].ProducesMIMETypes = []string{"application/vnd.oci.image.manifest.v1+json"}
+
+	id, err := enq.Enqueue(context.Background(), req)
+	require.Error(t, err, "an request that produces no job must not report success")
+	assert.Empty(t, id)
+	assert.Contains(t, err.Error(), "no scan job created")
+}
+
+// TestUndispatchedJobIsMarkedFailed pins that a job whose store record was
+// created but whose dispatch then failed does not sit at Queued. Queued is
+// indistinguishable from "waiting for a worker", so Harbor polled such a job
+// until the TTL instead of being told the real cause.
+func TestUndispatchedJobIsMarkedFailed(t *testing.T) {
+	store := memory.NewStore()
+	var dispatched job.ScanJobKey
+	enq := &enqueuer{
+		namespace: "ns",
+		store:     store,
+		dispatch: func(_ context.Context, payload []byte) error {
+			var j Job
+			require.NoError(t, json.Unmarshal(payload, &j))
+			dispatched = j.Key
+			return errors.New("transport down")
+		},
+	}
+
+	_, err := enq.Enqueue(context.Background(), sbomRequest())
+	require.Error(t, err)
+	require.NotEmpty(t, dispatched.ID, "dispatch must have been attempted")
+
+	got, err := store.Get(context.Background(), dispatched)
+	require.NoError(t, err)
+	require.NotNil(t, got, "the record is created before dispatch, so it exists")
+	assert.Equal(t, job.Failed, got.Status, "an undispatched job must not be left Queued")
+	assert.Contains(t, got.Error, "transport down")
 }

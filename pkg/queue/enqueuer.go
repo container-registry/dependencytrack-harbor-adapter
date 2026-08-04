@@ -2,7 +2,7 @@
 // distributed lock, ported from harbor-scanner-trivy. The lock TTL is derived
 // from the scan timeout rather than a copied constant (plan m5).
 //
-// Transport is a Redis list (RPUSH / BRPOP), not Pub/Sub: see worker.Start for
+// Transport is a Redis list (RPUSH / BLPOP), not Pub/Sub: see worker.Start for
 // the two ways Pub/Sub silently loses an accepted job.
 package queue
 
@@ -88,6 +88,8 @@ func (e *enqueuer) Enqueue(ctx context.Context, request harbor.ScanRequest) (str
 		return "", err
 	}
 
+	created := 0
+
 	for _, c := range request.Capabilities {
 		for _, mediaType := range lo.FromPtr(c.Parameters).SBOMMediaTypes {
 			for _, produces := range c.ProducesMIMETypes {
@@ -112,10 +114,19 @@ func (e *enqueuer) Enqueue(ctx context.Context, request harbor.ScanRequest) (str
 				}
 				scanJob := job.ScanJob{Key: jobKey, Status: job.Queued}
 				if err := e.enqueue(ctx, j, scanJob); err != nil {
-					return "", xerrors.Errorf("enqueuing scan job: %v", err)
+					return "", xerrors.Errorf("enqueuing scan job: %w", err)
 				}
+				created++
 			}
 		}
+	}
+
+	// Every produces-MIME was unsupported, so the loops above ran zero times.
+	// Returning an ID here handed Harbor a 202 for a job that does not exist,
+	// and Harbor then polled it until the TTL before giving up.
+	if created == 0 {
+		metrics.EnqueueFailuresTotal.Inc()
+		return "", xerrors.Errorf("no scan job created: no supported produces mime type in the request")
 	}
 
 	return jobID, nil
@@ -138,7 +149,15 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 
 	if err = e.dispatch(ctx, b); err != nil {
 		metrics.EnqueueFailuresTotal.Inc()
-		return xerrors.Errorf("enqueuing scan artifact job: %v", err)
+		// The store record already exists but no worker will ever see the job.
+		// Left Queued it is indistinguishable from a job that is merely waiting,
+		// so Harbor would poll it until the TTL. Mark it Failed so the poll
+		// reports the real cause instead.
+		if uErr := e.store.UpdateStatus(ctx, scanJob.Key, job.Failed, err.Error()); uErr != nil {
+			logger.Warn("Could not mark an undispatched scan job as failed",
+				slog.String("err", uErr.Error()))
+		}
+		return xerrors.Errorf("enqueuing scan artifact job: %w", err)
 	}
 
 	metrics.EnqueuedTotal.Inc()

@@ -193,7 +193,7 @@ Measured on the devenv (arm64, one scan at a time, disk-backed work dir):
 | `nvidia/cuda:12.6.3-devel` | 3.7 GB | **7Gi** | **OOMKilled**, 500 | 6.94 GiB (ceiling) | 30s |
 
 waybill holds layer content in memory while pulling, so peak tracks image size at
-**~4.5x** the compressed bytes (4.49x for golang, 4.44x for node) and is not
+**~4.7x** the compressed bytes (4.49x for golang, 4.68x for node at its highest observed peak) and is not
 bounded by anything. The successful rows settle at a fixed peak whatever headroom
 they are given; the killed rows consume every byte available, which puts the cuda
 requirement above 7 GiB (~15 GiB by the ratio, untestable on a 7.7 GiB Docker VM).
@@ -202,11 +202,11 @@ Note `node:22` at 400 MB is an ordinary image, not a pathological one, and it
 OOM-kills a 2Gi container. Size the limit from the ratio, not from intuition:
 
 ```
-memory limit  >=  4.5  ×  SCANNER_WAYBILL_MAX_IMAGE_SIZE  ×  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY   (plus headroom)
+memory limit  >=  4.7  ×  SCANNER_WAYBILL_MAX_IMAGE_SIZE  ×  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY   (plus headroom)
 ```
 
 The shipped deployment pairs a **512 MiB** cap with a **4Gi** limit: 512 MiB ×
-4.5 = 2.25 GiB peak, leaving 1.75 GiB spare. **Move the two together** — raising
+4.7 = 2.35 GiB peak, leaving 1.65 GiB spare. **Move the two together** — raising
 the cap alone just moves the OOM back by one artifact, and raising the limit alone
 wastes it.
 

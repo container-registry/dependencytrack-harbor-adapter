@@ -3,8 +3,8 @@
 //
 // It exists because memory is the binding constraint and nothing else bounds it.
 // waybill holds layer content in memory during the pull, so peak RSS runs at
-// ~4.5x the compressed size: golang:1.24 (316 MB) peaks at 1.32 GiB, node:22
-// (400 MB) at 1.65 GiB, and nvidia/cuda:12.6.3-devel (3.7 GB) is still
+// ~4.7x the compressed size: golang:1.24 (316 MB) peaks at 1.32 GiB, node:22
+// (400 MB) at 1.75 GiB, and nvidia/cuda:12.6.3-devel (3.7 GB) is still
 // OOM-killed at a 7Gi limit. The kill lands on the container, not on the job, so
 // one oversized artifact takes every in-flight scan down with it and the pod
 // restarts. A cheap manifest read turns that into one typed rejection.
@@ -67,12 +67,35 @@ type TooLargeError struct {
 }
 
 func (e *TooLargeError) Error() string {
-	// The memory estimate uses the measured ~4.5x ratio, and both knobs are
-	// named: raising the cap alone just moves the OOM back one artifact.
+	// Both knobs are named: raising the cap alone just moves the OOM back one
+	// artifact.
 	return fmt.Sprintf(
 		"artifact %s is %d compressed bytes, over the %d limit; scanning it needs roughly %d bytes of memory "+
 			"(raise SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit together)",
-		e.Ref, e.Size, e.Limit, e.Size*9/2)
+		e.Ref, e.Size, e.Limit, EstimatedMemory(e.Size))
+}
+
+// memoryRatioNum/memoryRatioDen express the measured peak-RSS-to-compressed-size
+// ratio, 4.7x. It is taken from the largest successful run rather than from an
+// OOM ceiling: node:22 (400 MB) peaked at 1.75 GiB on a 4Gi limit, while the
+// 1.65 GiB it used under a 2Gi limit only shows what it was squeezed into.
+// Sizing off the squeezed number would under-provision by design.
+const (
+	memoryRatioNum = 47
+	memoryRatioDen = 10
+)
+
+// EstimatedMemory is the RSS a scan of this many compressed bytes is expected to
+// need. It saturates instead of wrapping: a pathological manifest would
+// otherwise turn the operator guidance in TooLargeError into a negative number.
+func EstimatedMemory(compressedSize int64) int64 {
+	if compressedSize <= 0 {
+		return 0
+	}
+	if compressedSize > math.MaxInt64/memoryRatioNum {
+		return math.MaxInt64
+	}
+	return compressedSize * memoryRatioNum / memoryRatioDen
 }
 
 // Prober measures an artifact without pulling it.
@@ -179,6 +202,11 @@ func (p *prober) CompressedSize(ctx context.Context, target Target) (int64, erro
 // waybill resolves one platform. Harbor normally fans a scan out to the index's
 // children and sends each child digest, so this path is the exception.
 //
+// When SCANNER_WAYBILL_IMAGE_PLATFORM matches no child it falls back to the
+// largest child. Returning zero there would be a guard bypass, not a safe
+// default: the platform is a hint about what waybill will choose, and being
+// wrong about it must over-estimate, never under-estimate.
+//
 // A nested index is measured by recursing, never skipped. Treating an
 // unmeasurable child as zero was a hole straight through the guard: the largest
 // child could be the one that contributes nothing to the total.
@@ -191,11 +219,15 @@ func (p *prober) indexSize(idx v1.ImageIndex, depth int) (int64, error) {
 		return 0, fmt.Errorf("reading index manifest: %w", err)
 	}
 
-	var largest int64
+	// Two totals in one pass. largestMatching is what the configured platform
+	// selects; largestAny is the conservative fallback for when the configured
+	// platform selects nothing, which must NOT come out as zero -- that would
+	// wave an arbitrarily large artifact straight through the cap.
+	var largestMatching, largestAny int64
+	matched := false
+
 	for _, child := range manifest.Manifests {
-		if p.platform != "" && child.Platform != nil && !platformMatches(p.platform, child.Platform) {
-			continue
-		}
+		selected := p.platform == "" || child.Platform == nil || platformMatches(p.platform, child.Platform)
 
 		var size int64
 		switch {
@@ -221,11 +253,23 @@ func (p *prober) indexSize(idx v1.ImageIndex, depth int) (int64, error) {
 			continue
 		}
 
-		if size > largest {
-			largest = size
+		if size > largestAny {
+			largestAny = size
+		}
+		if selected {
+			matched = true
+			if size > largestMatching {
+				largestMatching = size
+			}
 		}
 	}
-	return largest, nil
+
+	if matched {
+		return largestMatching, nil
+	}
+	// Nothing matched the configured platform. waybill may still resolve this
+	// reference to some child, so charge the largest one rather than nothing.
+	return largestAny, nil
 }
 
 // platformMatches compares an os/arch[/variant] string against an index child.

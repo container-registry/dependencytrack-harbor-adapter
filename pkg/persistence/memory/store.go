@@ -40,7 +40,13 @@ func (s *store) Get(_ context.Context, scanJobKey job.ScanJobKey) (*job.ScanJob,
 	if !ok {
 		return nil, nil
 	}
+	// A struct copy still shares Report's backing array, so a caller mutating
+	// the returned report would mutate the stored one. Dev-only backend, but a
+	// silent aliasing bug is not worth keeping.
 	clone := j
+	if j.Report != nil {
+		clone.Report = append(json.RawMessage(nil), j.Report...)
+	}
 	return &clone, nil
 }
 

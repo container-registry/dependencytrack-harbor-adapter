@@ -17,11 +17,18 @@ permissions:
 
 concurrency:
   group: main-image-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a publish. publish-image.yml pushes and signs in separate jobs,
+  # so cancelling between them leaves consumers pulling an unsigned `latest`.
+  cancel-in-progress: false
 
 jobs:
   publish-image:
     name: Publish Latest Image
+    # workflow_dispatch accepts any ref, and this job publishes the mutable
+    # `latest` tag from it. Without this guard an unmerged branch could be
+    # dispatched straight to the tag every consumer follows. Dispatching from
+    # main still works, which is all the WIF smoke test needs.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     permissions:
       contents: read
       id-token: write

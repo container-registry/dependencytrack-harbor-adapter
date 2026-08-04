@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
@@ -70,7 +71,14 @@ func (c ScanRequest) GetImageRef() (imageRef string, insecure bool, err error) {
 		port = "443"
 	}
 
-	imageRef = fmt.Sprintf("%s:%s/%s@%s", registryURL.Hostname(), port, c.Artifact.Repository, c.Artifact.Digest)
+	// Hostname() strips the brackets from an IPv6 literal, and "::1:443/repo"
+	// is not a parseable reference. Put them back when the host is IPv6.
+	host := registryURL.Hostname()
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+
+	imageRef = fmt.Sprintf("%s:%s/%s@%s", host, port, c.Artifact.Repository, c.Artifact.Digest)
 	insecure = registryURL.Scheme == "http"
 	return imageRef, insecure, nil
 }

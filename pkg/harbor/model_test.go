@@ -31,3 +31,17 @@ func TestGetImageRef(t *testing.T) {
 		})
 	}
 }
+
+// TestGetImageRefBracketsIPv6 pins that an IPv6 registry produces a parseable
+// reference. url.Hostname() strips the brackets, and "::1:443/repo@sha256:..."
+// is not a reference any registry client will accept.
+func TestGetImageRefBracketsIPv6(t *testing.T) {
+	req := ScanRequest{
+		Registry: Registry{URL: "http://[::1]:8080"},
+		Artifact: Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
+	}
+	ref, insecure, err := req.GetImageRef()
+	require.NoError(t, err)
+	assert.Equal(t, "[::1]:8080/library/alpine@sha256:deadbeef", ref)
+	assert.True(t, insecure)
+}

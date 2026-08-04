@@ -157,6 +157,11 @@ func (w *wrapper) GenerateSBOM(ctx context.Context, target ScanTarget, jobDir st
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("waybill output is not a JSON object: %w", err)
 	}
+	// JSON "null" unmarshals into a nil map without error, so the check above
+	// alone let a successful-looking run store a report with no SBOM in it.
+	if probe == nil {
+		return nil, fmt.Errorf("waybill output %s is JSON null, not an SPDX document", reportPath)
+	}
 
 	return json.RawMessage(raw), nil
 }

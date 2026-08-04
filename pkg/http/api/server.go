@@ -55,7 +55,13 @@ func NewServer(config etc.API, handler http.Handler) (server *Server, err error)
 				if err != nil {
 					return nil, fmt.Errorf("could not read file %s: %w", clientCAPath, err)
 				}
-				certPool.AppendCertsFromPEM(clientCA)
+				// AppendCertsFromPEM reports whether it added anything. Ignoring
+				// it left an empty pool with RequireAndVerifyClientCert, which
+				// rejects every client certificate -- a total outage presenting
+				// as a per-client TLS error.
+				if !certPool.AppendCertsFromPEM(clientCA) {
+					return nil, fmt.Errorf("client CA file %s contains no usable certificate", clientCAPath)
+				}
 			}
 			server.server.TLSConfig.ClientCAs = certPool
 			server.server.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
