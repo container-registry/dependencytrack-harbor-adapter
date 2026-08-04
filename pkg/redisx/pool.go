@@ -71,12 +71,22 @@ func newSentinelPool(configURL *url.URL, config etc.RedisPool) (*redis.Client, e
 		DB:            sentinelURL.Database,
 		Password:      sentinelURL.Password,
 		Username:      sentinelURL.Username,
+		// Sentinel processes have their own AUTH, usually distinct from the
+		// master's (and often absent), so the URL credentials are NOT mirrored
+		// here: go-redis sends AUTH to a sentinel whenever SentinelPassword is
+		// set, and an un-authed sentinel rejects that. Deployments with authed
+		// sentinels opt in via ?sentinel_username=...&sentinel_password=....
+		SentinelUsername: sentinelURL.SentinelUsername,
+		SentinelPassword: sentinelURL.SentinelPassword,
 
 		DialTimeout:  config.ConnectionTimeout,
 		ReadTimeout:  config.ReadTimeout,
 		WriteTimeout: config.WriteTimeout,
 
-		MaxIdleConns:    config.MaxIdle,
+		MaxIdleConns: config.MaxIdle,
+		// Same cap as the standalone path: without it a sentinel-backed
+		// deployment ignored SCANNER_REDIS_POOL_MAX_ACTIVE entirely.
+		MaxActiveConns:  config.MaxActive,
 		ConnMaxIdleTime: config.IdleTimeout,
 
 		OnConnect: func(_ context.Context, cn *redis.Conn) error {
@@ -93,6 +103,11 @@ type SentinelURL struct {
 	Addrs       []string
 	MonitorName string
 	Database    int
+	// SentinelUsername/SentinelPassword authenticate to the sentinel processes
+	// themselves (distinct from the master credentials in the userinfo part).
+	// Set via ?sentinel_username=...&sentinel_password=... query parameters.
+	SentinelUsername string
+	SentinelPassword string
 }
 
 func getTLSconfig(configURL *url.URL) *tls.Config {
@@ -117,6 +132,10 @@ func ParseSentinelURL(configURL *url.URL) (sentinelURL SentinelURL, err error) {
 
 	sentinelURL.Addrs = strings.Split(configURL.Host, ",")
 	sentinelURL.MonitorName = ps[1]
+
+	query := configURL.Query()
+	sentinelURL.SentinelUsername = query.Get("sentinel_username")
+	sentinelURL.SentinelPassword = query.Get("sentinel_password")
 
 	if len(ps) > 2 {
 		sentinelURL.Database, err = strconv.Atoi(ps[2])

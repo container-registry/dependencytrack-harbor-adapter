@@ -51,6 +51,27 @@ func TestMemoryStoreLifecycle(t *testing.T) {
 func TestMemoryStoreUpdateMissing(t *testing.T) {
 	s := NewStore()
 	require.Error(t, s.UpdateStatus(context.Background(), key(), job.Finished))
+	require.Error(t, s.Finish(context.Background(), key(), json.RawMessage(`{}`)))
+	require.Error(t, s.FailIfQueued(context.Background(), key(), "boom"))
+}
+
+// TestMemoryStoreFailIfQueued mirrors the Redis contract: only a Queued record
+// may be claimed as Failed by enqueue cleanup.
+func TestMemoryStoreFailIfQueued(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	k := key()
+	require.NoError(t, s.Create(ctx, job.ScanJob{Key: k, Status: job.Queued}))
+	require.NoError(t, s.FailIfQueued(ctx, k, "undispatched"))
+	got, err := s.Get(ctx, k)
+	require.NoError(t, err)
+	assert.Equal(t, job.Failed, got.Status)
+
+	require.NoError(t, s.UpdateStatus(ctx, k, job.Finished))
+	require.NoError(t, s.FailIfQueued(ctx, k, "undispatched"))
+	got, err = s.Get(ctx, k)
+	require.NoError(t, err)
+	assert.Equal(t, job.Finished, got.Status, "a non-Queued record must be left untouched")
 }
 
 // TestGetReturnsAnIndependentReport pins that the returned record does not alias

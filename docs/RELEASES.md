@@ -29,8 +29,11 @@ version and triggers the image publish. You do not tag or build releases by hand
   merges are also disabled in repo settings. This is load-bearing, not a preference.
 - **Never push `v*` tags by hand.** release-please owns the tags. A hand-pushed tag
   desynchronizes the manifest and the next release PR will compute the wrong version.
-- **No AI attribution / `Co-Authored-By` trailers.** DCO sign-off is enforced by
-  lefthook + the hygiene job.
+- **No AI attribution / `Co-Authored-By` trailers.** DCO sign-off is enforced
+  client-side by the lefthook `commit-msg` hook (so only for developers who ran
+  `task setup`). There is no server-side CI check yet; install the
+  [DCO GitHub App](https://github.com/apps/dco) (or add a CI step) if hard
+  enforcement is wanted.
 
 ## The `exclude-paths` gotcha (read this before a docs/CI-only PR)
 

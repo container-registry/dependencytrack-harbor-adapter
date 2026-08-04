@@ -37,6 +37,10 @@ func newHandler(t *testing.T, store persistence.Store, enq *fakeEnqueuer) http.H
 	cfg, err := etc.GetConfig()
 	require.NoError(t, err)
 	cfg.API.MetricsEnabled = false
+	// Hermetic against ambient env: a SCANNER_API_AUTH_API_KEY set in the
+	// developer's shell would otherwise arm the auth middleware and 401 every
+	// test that does not send the header.
+	cfg.API.APIKey = ""
 	scanner := harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "0.1.0-alpha.55"}
 	info := etc.BuildInfo{Version: "1.2.3", Commit: "deadbee", Date: "2026-07-09"}
 	return NewAPIHandler(info, cfg, scanner, enq, store, func(context.Context) error { return nil })
@@ -73,32 +77,57 @@ func TestAcceptScan_ValidationMatrix(t *testing.T) {
 		{"malformed json", `{`, http.StatusBadRequest, ""},
 		{
 			"missing registry url",
-			`{"registry":{"url":""},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["x"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			`{"registry":{"url":""},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
 			http.StatusUnprocessableEntity, "registry.url",
 		},
 		{
 			"missing repository",
-			`{"registry":{"url":"https://c"},"artifact":{"digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["x"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			`{"registry":{"url":"https://c"},"artifact":{"digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
 			http.StatusUnprocessableEntity, "artifact.repository",
 		},
 		{
 			"missing digest",
-			`{"registry":{"url":"https://c"},"artifact":{"repository":"a"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["x"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			`{"registry":{"url":"https://c"},"artifact":{"repository":"a"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
 			http.StatusUnprocessableEntity, "artifact.digest",
 		},
 		{
 			"vulnerability capability rejected",
-			`{"registry":{"url":"https://c"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"vulnerability","produces_mime_types":["x"]}]}`,
+			`{"registry":{"url":"https://c"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"vulnerability","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"]}]}`,
 			http.StatusUnprocessableEntity, "only supports sbom",
 		},
 		{
 			"unsupported sbom media type",
-			`{"registry":{"url":"https://c"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["x"],"parameters":{"sbom_media_types":["application/vnd.cyclonedx+json"]}}]}`,
+			`{"registry":{"url":"https://c"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/vnd.cyclonedx+json"]}}]}`,
 			http.StatusUnprocessableEntity, "unsupported SBOM media type",
 		},
 		{
+			"unsupported produces mime type",
+			`{"registry":{"url":"https://c"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.example+json"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			http.StatusUnprocessableEntity, "unsupported produces mime type",
+		},
+		{
+			"registry url without scheme",
+			`{"registry":{"url":"core.harbor.domain"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			http.StatusUnprocessableEntity, "registry.url",
+		},
+		{
+			"registry url with non-http scheme",
+			`{"registry":{"url":"ftp://core.harbor.domain"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			http.StatusUnprocessableEntity, "registry.url",
+		},
+		{
+			"malformed basic authorization rejected",
+			`{"registry":{"url":"https://c","authorization":"Basic not-base64!!"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			http.StatusUnprocessableEntity, "authorization",
+		},
+		{
+			"basic authorization without separator rejected",
+			`{"registry":{"url":"https://c","authorization":"Basic dXNlcnBhc3M="},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			http.StatusUnprocessableEntity, "username:password",
+		},
+		{
 			"bearer authorization rejected",
-			`{"registry":{"url":"https://c","authorization":"Bearer tok"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["x"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
+			`{"registry":{"url":"https://c","authorization":"Bearer tok"},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`,
 			http.StatusUnprocessableEntity, "Basic",
 		},
 	}
@@ -127,7 +156,7 @@ func TestAcceptScan_ValidationMatrix(t *testing.T) {
 
 func TestAcceptScan_EmptyAuthAllowed(t *testing.T) {
 	h := newHandler(t, memory.NewStore(), &fakeEnqueuer{id: "job-1"})
-	body := `{"registry":{"url":"https://c","authorization":""},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["x"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`
+	body := `{"registry":{"url":"https://c","authorization":""},"artifact":{"repository":"a","digest":"sha256:x"},"enabled_capabilities":[{"type":"sbom","produces_mime_types":["application/vnd.security.sbom.report+json; version=1.0"],"parameters":{"sbom_media_types":["application/spdx+json"]}}]}`
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	h.ServeHTTP(rr, req)

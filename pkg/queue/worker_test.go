@@ -220,6 +220,41 @@ func (c *blockingController) Scan(ctx context.Context, _ job.ScanJobKey, _ *harb
 	return nil
 }
 
+// TestInFlightJobSurvivesWorkerCrash pins the BLMOVE processing-list recovery:
+// a payload a crashed worker left parked on the processing list (dequeued, never
+// completed) must be requeued and run by the next Start. With BLPOP the dequeue
+// deleted the only copy, so a crash mid-scan lost the job and Harbor polled the
+// Queued record until its TTL.
+func TestInFlightJobSurvivesWorkerCrash(t *testing.T) {
+	_, rdb := newTestRedis(t)
+	const ns = "test.ns"
+
+	j := Job{Name: scanArtifactJobName, Key: job.ScanJobKey{ID: "crashed-job", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX}, Args: Args{ScanRequest: &harbor.ScanRequest{}}}
+	payload, err := json.Marshal(j)
+	require.NoError(t, err)
+	// Simulate the crash aftermath directly: the payload sits on the processing
+	// list, exactly where BLMOVE parks it between dequeue and completion.
+	require.NoError(t, rdb.RPush(context.Background(), redisProcessingList(ns), payload).Err())
+
+	ctrl := &countingController{}
+	w := NewWorker(etc.JobQueue{Namespace: ns, WorkerConcurrency: 1}, time.Minute, rdb, ctrl)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+	t.Cleanup(w.Stop)
+
+	require.Eventually(t, func() bool { return ctrl.count() == 1 }, 10*time.Second, 20*time.Millisecond,
+		"a job left in-flight by a crashed worker must be requeued and run")
+	assert.Equal(t, "crashed-job", ctrl.keys[0].ID)
+
+	// The completed job must be acknowledged off the processing list, or the
+	// next restart would run it a third time.
+	require.Eventually(t, func() bool {
+		n, err := rdb.LLen(context.Background(), redisProcessingList(ns)).Result()
+		return err == nil && n == 0
+	}, 5*time.Second, 20*time.Millisecond, "completed jobs must be removed from the processing list")
+}
+
 // noopStore satisfies persistence.Store for the enqueue path; these tests care
 // only about the queue transport, not the store.
 type noopStore struct{}
@@ -233,6 +268,7 @@ func (noopStore) UpdateStatus(context.Context, job.ScanJobKey, job.ScanJobStatus
 	return nil
 }
 func (noopStore) Finish(context.Context, job.ScanJobKey, json.RawMessage) error { return nil }
+func (noopStore) FailIfQueued(context.Context, job.ScanJobKey, string) error    { return nil }
 
 func jobpkgScanJob(j Job) job.ScanJob {
 	return job.ScanJob{Key: j.Key, Status: job.Queued}

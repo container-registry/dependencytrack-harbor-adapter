@@ -8,13 +8,11 @@ package scan
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"golang.org/x/xerrors"
@@ -260,43 +258,16 @@ func (c *controller) buildEnvelope(req *harbor.ScanRequest, sbom json.RawMessage
 
 // applyAuth decodes the scan request authorization into the pull credentials.
 // Empty header = anonymous pull (waybill falls through to anonymous when neither
-// credential env var is set). Basic = decoded username/password (split on the
-// first ':' so robot secrets containing ':' survive). Bearer is rejected as
-// defense-in-depth; the handler already 422s it (plan D-2). Bearer stays rejected
-// after the move to waybill's native pull: waybill's credential chain still takes
-// only username/password and performs its own token exchange, so a pre-minted
-// Bearer token has nowhere to go (docs/upstream-issues.md issue 3).
+// credential env var is set). The parse is shared with the handler's /scan
+// validation (harbor.ParseBasicAuthorization), so a request that was 202-accepted
+// cannot fail to parse here; this remains as defense-in-depth for payloads that
+// reached the queue some other way.
 func applyAuth(target *waybill.ScanTarget, authorization string) error {
-	if authorization == "" {
-		return nil
+	username, password, err := harbor.ParseBasicAuthorization(authorization)
+	if err != nil {
+		return xerrors.Errorf("%v", err)
 	}
-
-	scheme, value, ok := strings.Cut(authorization, " ")
-	if !ok {
-		return xerrors.Errorf("parsing authorization: expected \"<scheme> <credentials>\"")
-	}
-
-	// RFC 9110 makes the scheme case-insensitive. Matching it exactly rejected
-	// "basic"/"BASIC" as an unrecognized scheme.
-	switch {
-	case strings.EqualFold(scheme, "Basic"):
-		creds, err := base64.StdEncoding.DecodeString(value)
-		if err != nil {
-			return xerrors.Errorf("decoding basic authorization: %v", err)
-		}
-		username, password, ok := strings.Cut(string(creds), ":")
-		if !ok {
-			// Without the separator this is not a credential pair. Accepting it
-			// queued a scan that failed later at registry auth, or silently
-			// became an anonymous pull when the payload was empty.
-			return xerrors.Errorf("decoding basic authorization: expected \"username:password\"")
-		}
-		target.Username = username
-		target.Password = password
-		return nil
-	case strings.EqualFold(scheme, "Bearer"):
-		return xerrors.Errorf("bearer authorization is not supported; this adapter advertises Basic")
-	default:
-		return xerrors.Errorf("unrecognized authorization scheme: %s", scheme)
-	}
+	target.Username = username
+	target.Password = password
+	return nil
 }

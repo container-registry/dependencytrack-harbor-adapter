@@ -5,9 +5,12 @@
 Please report security vulnerabilities privately. Do **not** open a public GitHub
 issue for a security report.
 
-- Email: **security@8gears.com**
-- Alternatively, use GitHub's private "Report a vulnerability" advisory flow on
-  this repository.
+- Preferred: GitHub's private "Report a vulnerability" advisory flow on this
+  repository (encrypted in transit and at rest, and it keeps the report tied to
+  the repo).
+- Alternatively, email **security@8gears.com**. Note this channel has no
+  published PGP key, so treat it as plain email and keep exploit details for
+  the advisory flow when possible.
 
 Include a description, affected version, and reproduction steps where possible.
 We will acknowledge receipt and coordinate a fix and disclosure timeline with you.

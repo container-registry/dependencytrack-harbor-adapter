@@ -125,6 +125,53 @@ func TestFinishStoresReportAndStatus(t *testing.T) {
 	assert.Empty(t, got.Error)
 }
 
+// TestFailIfQueuedOnlyClaimsQueuedRecords pins the enqueue-cleanup contract: a
+// dispatch "failure" whose RPUSH actually landed races the worker, and the
+// cleanup must never overwrite a record the worker has moved past Queued —
+// that would report a completed scan as Failed and discard its report.
+func TestFailIfQueuedOnlyClaimsQueuedRecords(t *testing.T) {
+	_, s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	t.Run("still queued: claimed as failed", func(t *testing.T) {
+		key := job.ScanJobKey{ID: "q1", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX}
+		require.NoError(t, s.Create(ctx, job.ScanJob{Key: key, Status: job.Queued}))
+		require.NoError(t, s.FailIfQueued(ctx, key, "could not be queued"))
+		got, err := s.Get(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, job.Failed, got.Status)
+		assert.Contains(t, got.Error, "could not be queued")
+	})
+
+	t.Run("worker already finished: left untouched", func(t *testing.T) {
+		key := job.ScanJobKey{ID: "f1", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX}
+		report := json.RawMessage(`{"media_type":"application/spdx+json","sbom":{}}`)
+		require.NoError(t, s.Create(ctx, job.ScanJob{Key: key, Status: job.Queued}))
+		require.NoError(t, s.Finish(ctx, key, report))
+		require.NoError(t, s.FailIfQueued(ctx, key, "could not be queued"))
+		got, err := s.Get(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, job.Finished, got.Status, "a terminal record must never be overwritten by enqueue cleanup")
+		assert.JSONEq(t, string(report), string(got.Report))
+	})
+
+	t.Run("worker already running: left untouched", func(t *testing.T) {
+		key := job.ScanJobKey{ID: "p1", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX}
+		require.NoError(t, s.Create(ctx, job.ScanJob{Key: key, Status: job.Queued}))
+		require.NoError(t, s.UpdateStatus(ctx, key, job.Pending))
+		require.NoError(t, s.FailIfQueued(ctx, key, "could not be queued"))
+		got, err := s.Get(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, job.Pending, got.Status)
+	})
+
+	t.Run("missing record: ErrJobNotFound", func(t *testing.T) {
+		key := job.ScanJobKey{ID: "missing", MIMEType: api.MimeTypeSecuritySBOMReport, MediaType: api.MediaTypeSPDX}
+		err := s.FailIfQueued(ctx, key, "could not be queued")
+		require.ErrorIs(t, err, persistence.ErrJobNotFound)
+	})
+}
+
 // TestFinishFailsOnExpiredKey keeps the SetXX guarantee after the Get was
 // dropped: a job whose TTL elapsed during a long scan must not be resurrected as
 // a record Harbor would then poll forever.

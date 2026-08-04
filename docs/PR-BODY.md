@@ -195,15 +195,16 @@ manifest-size probe before handing the reference to waybill; tracked, not done.
 
 ## Open findings (carried, not fixed)
 
-Full list in `docs/HANDOFF.md` §e. Fixed in this PR: queue durability, Redis pool timeouts,
-`SCANNER_WAYBILL_TIMEOUT<=0`. Still open:
+Full list in `docs/HANDOFF.md` §e. Fixed in this PR (cumulative over review rounds):
+queue durability (Redis list + BLMOVE processing list with crash requeue), Redis pool
+timeouts, `SCANNER_WAYBILL_TIMEOUT<=0`, the pre-pull image-size cap
+(`SCANNER_WAYBILL_MAX_IMAGE_SIZE` + manifest probe, nested-index and platform aware),
+the single-write gzipped report path, the enqueue-cleanup/worker status race
+(`FailIfQueued` conditional write), and sentinel pool caps/auth. Still open:
 
-- No pre-pull image-size cap; the per-job workdir mount is the only bound (see above).
 - No pull-phase deadline separate from the job deadline. It is now less sharp than it was —
   the pull and the scan share waybill's `--timeout` plus the job deadline — but one stalled
   pull still occupies a worker for the full budget at concurrency 1.
-- Report finish path moves the multi-MB SBOM across Redis ~4x and stores it uncompressed;
-  collapse to one write and gzip.
 - Throughput mismatch: serial adapter vs parallel Harbor jobservice; document sizing / skip
   jobs past Harbor's 30-min budget.
 - Minor: process-group kill on backstop; CI cost (lint tools compiled from source, needless
@@ -219,14 +220,19 @@ Full list in `docs/HANDOFF.md` §e. Fixed in this PR: queue durability, Redis po
       registry.
 - [ ] The SSRF surface of `/scan` accepting arbitrary registry URLs is acceptable behind
       API-key auth + NetworkPolicy for the demo.
-- [ ] The Redis list queue is the right durability floor for v1, and the remaining
-      at-least-once gap (a worker crashing mid-scan loses the job until TTL) is acceptable.
+- [ ] The Redis list queue + BLMOVE processing list is the right durability floor for v1:
+      a worker crash mid-scan no longer loses the job (it is requeued at the next start),
+      at the cost of at-least-once semantics (a duplicate scan after a crash, fenced by
+      the SetNX lock).
 - [ ] Contract tests genuinely pin the exact D-3 MIME strings and pass Harbor's vendored
       `Validate()` / `RawSBOMReport` round-trip.
 - [ ] The sbom-only footgun is adequately guarded (422 on vuln requests) and documented;
       registration guidance (non-default, project-bound) is clear.
 - [ ] `--offline` is passed in argv (not relying on `WAYBILL_OFFLINE` env) so no enrichment
       egress occurs, and it is understood that `--offline` does not gate the registry pull.
+      Offline is the default, not unconditional: `SCANNER_WAYBILL_ENRICHMENT=true` is the
+      deliberate opt-in that drops `--offline` and enables waybill's deps.dev /
+      ClearlyDefined enrichment egress.
 - [ ] The waybill pin (`versions.env`) is at or above `v0.1.0-alpha.69` — below m182 every
       plain-HTTP and private-CA deployment breaks.
 - [ ] Apache-2.0 redistribution obligations (LICENSE in image, NOTICE) are correct.

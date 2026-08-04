@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/schema"
@@ -156,8 +155,13 @@ func (h *requestHandler) validateScanRequest(req harbor.ScanRequest) *api.Error 
 	if req.Registry.URL == "" {
 		return &api.Error{HTTPCode: http.StatusUnprocessableEntity, Message: "missing registry.url"}
 	}
-	if _, err := url.ParseRequestURI(req.Registry.URL); err != nil {
-		return &api.Error{HTTPCode: http.StatusUnprocessableEntity, Message: "invalid registry.url"}
+	// Scheme and host are required, not just parseability: GetImageRef builds
+	// the pull reference from them, so "registry.example.com" (no scheme) or
+	// "ftp://..." was 202-accepted here and failed only after a worker took the
+	// job — an error Harbor should have been handed synchronously as a 422.
+	registryURL, err := url.ParseRequestURI(req.Registry.URL)
+	if err != nil || registryURL.Host == "" || (registryURL.Scheme != "http" && registryURL.Scheme != "https") {
+		return &api.Error{HTTPCode: http.StatusUnprocessableEntity, Message: "invalid registry.url: expected an absolute http(s) URL"}
 	}
 	if req.Artifact.Repository == "" {
 		return &api.Error{HTTPCode: http.StatusUnprocessableEntity, Message: "missing artifact.repository"}
@@ -166,18 +170,15 @@ func (h *requestHandler) validateScanRequest(req harbor.ScanRequest) *api.Error 
 		return &api.Error{HTTPCode: http.StatusUnprocessableEntity, Message: "missing artifact.digest"}
 	}
 
-	// Bearer (or any non-Basic) authorization is rejected at submit: this adapter
-	// advertises Basic, and waybill's credential chain takes a username/password
-	// pair only — it performs its own token exchange and cannot be handed a
-	// pre-minted Bearer token (plan D-2, docs/upstream-issues.md issue 3). Empty
-	// auth = anonymous pull, allowed.
-	if req.Registry.Authorization != "" {
-		scheme, _, _ := strings.Cut(req.Registry.Authorization, " ")
-		if scheme != "Basic" {
-			return &api.Error{
-				HTTPCode: http.StatusUnprocessableEntity,
-				Message:  "this adapter advertises Basic registry authorization; a non-Basic authorization indicates a misconfigured scanner registration",
-			}
+	// The same parse the worker applies (plan D-2, docs/upstream-issues.md issue
+	// 3): Bearer and malformed Basic are rejected at submit rather than being
+	// 202-accepted and failing later inside the worker. Empty auth = anonymous
+	// pull, allowed.
+	if _, _, err := harbor.ParseBasicAuthorization(req.Registry.Authorization); err != nil {
+		return &api.Error{
+			HTTPCode: http.StatusUnprocessableEntity,
+			Message: fmt.Sprintf("invalid registry.authorization (%s); this adapter advertises Basic registry authorization — "+
+				"a non-Basic or malformed authorization indicates a misconfigured scanner registration", err),
 		}
 	}
 
@@ -198,6 +199,18 @@ func validateCapabilities(capabilities []harbor.Capability) *api.Error {
 		}
 		if c.Type != harbor.CapabilityTypeSBOM {
 			return &api.Error{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("unsupported scan type: %q", c.Type)}
+		}
+
+		// Every produces MIME must be one this adapter can serve. The enqueuer
+		// skips unsupported ones defensively, so without this check a request
+		// carrying only unsupported values was acknowledged and then failed at
+		// enqueue as a 500 — a caller error, not a server one, and it deserves
+		// the same synchronous 422 as every other contract violation.
+		for _, produces := range c.ProducesMIMETypes {
+			var m api.MIMEType
+			if err := m.Parse(produces); err != nil {
+				return &api.Error{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("unsupported produces mime type: %q", produces)}
+			}
 		}
 
 		params := lo.FromPtr(c.Parameters)

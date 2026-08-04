@@ -65,9 +65,10 @@ jobs:
           fi
           echo "VERSION=${version}" >> "$GITHUB_ENV"
 
-      - name: Build binaries
-        run: task build PLATFORMS=linux/amd64,linux/arm64 VERSION="${VERSION}"
-
+      # No standalone `task build` here: `task image` below runs build (and
+      # lprobe/waybill staging) itself with the same PLATFORMS/VERSION, and the
+      # Taskfile deliberately disables binary-build caching, so a separate step
+      # compiled everything twice.
       - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
 
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0

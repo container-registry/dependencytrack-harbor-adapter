@@ -10,14 +10,23 @@ module.exports = async ({ github, context, core }) => {
   // Apply repository settings
   async function applyRepository() {
     if (!settings.repository) return
-    await github.rest.repos.update({ owner, repo, ...settings.repository })
+    // repos.update (PATCH /repos/{owner}/{repo}) silently ignores `topics`;
+    // they have their own replace-all endpoint. Splitting them here keeps a
+    // configured topics list from permanently failing drift verification.
+    const { topics, ...repoSettings } = settings.repository
+    await github.rest.repos.update({ owner, repo, ...repoSettings })
+    if (Array.isArray(topics)) {
+      await github.rest.repos.replaceAllTopics({ owner, repo, names: topics })
+    }
     core.info('✓ repository')
   }
 
   // Apply labels (create or update)
   async function applyLabels() {
     if (!settings.labels) return
-    const { data: existing } = await github.rest.issues.listLabelsForRepo({ owner, repo, per_page: 100 })
+    // paginate: past 100 labels a managed one on a later page would look
+    // missing and createLabel would fail with already_exists.
+    const existing = await github.paginate(github.rest.issues.listLabelsForRepo, { owner, repo, per_page: 100 })
     const existingNames = new Set(existing.map(l => l.name))
     for (const [name, config] of Object.entries(settings.labels)) {
       if (existingNames.has(name)) {
@@ -105,7 +114,10 @@ module.exports = async ({ github, context, core }) => {
       try {
         await fn()
       } catch (e) {
-        core.warning(`${name}: ${e.message} (needs SETTINGS_TOKEN?)`)
+        // The PAT hint only fits the sections the default GITHUB_TOKEN cannot
+        // write; blaming the token for a label typo or a rate limit misleads.
+        const needsToken = ['repository', 'security', 'rulesets', 'branches', 'environments'].includes(name)
+        core.warning(`${name}: ${e.message}${needsToken ? ' (needs SETTINGS_TOKEN?)' : ''}`)
         failures.push(name)
       }
     }
@@ -117,7 +129,7 @@ module.exports = async ({ github, context, core }) => {
   // Export current settings from GitHub
   async function exportSettings() {
     const { data: r } = await github.rest.repos.get({ owner, repo })
-    const { data: labels } = await github.rest.issues.listLabelsForRepo({ owner, repo, per_page: 100 })
+    const labels = await github.paginate(github.rest.issues.listLabelsForRepo, { owner, repo, per_page: 100 })
 
     let codeScanningData = {}
     try {
@@ -255,10 +267,16 @@ module.exports = async ({ github, context, core }) => {
     return obj
   }
 
-  // Sort object keys recursively for stable comparison
+  // Sort object keys recursively for stable comparison. Arrays of primitives
+  // (topics, status-check contexts, languages) are set-like in the GitHub API
+  // and come back in arbitrary order, so they are sorted too; arrays of objects
+  // keep their order.
   function sortKeys(obj) {
     if (obj === null || obj === undefined) return obj
-    if (Array.isArray(obj)) return obj.map(sortKeys)
+    if (Array.isArray(obj)) {
+      const mapped = obj.map(sortKeys)
+      return mapped.every(v => typeof v !== 'object' || v === null) ? [...mapped].sort() : mapped
+    }
     if (typeof obj === 'object') {
       return Object.keys(obj).sort().reduce((acc, key) => {
         acc[key] = sortKeys(obj[key])
@@ -268,8 +286,9 @@ module.exports = async ({ github, context, core }) => {
     return obj
   }
 
-  // Detect drift between settings.yml and GitHub
-  async function detectDrift() {
+  // Detect drift between settings.yml and GitHub. With soft=true a mismatch is
+  // reported without failing the step (used by the verify retry loop).
+  async function detectDrift(soft = false) {
     core.info('Exporting current GitHub settings...')
     const current = await exportSettings()
     const expected = sortKeys(normalize(settings))
@@ -283,9 +302,13 @@ module.exports = async ({ github, context, core }) => {
       return true
     }
 
-    core.setFailed('Drift detected! settings.yml differs from GitHub state.')
-    core.info('Expected:\n' + expectedJson)
-    core.info('Actual:\n' + actualJson)
+    if (soft) {
+      core.info('Drift (not yet failing): settings.yml differs from GitHub state.')
+    } else {
+      core.setFailed('Drift detected! settings.yml differs from GitHub state.')
+      core.info('Expected:\n' + expectedJson)
+      core.info('Actual:\n' + actualJson)
+    }
     return false
   }
 
@@ -303,8 +326,17 @@ module.exports = async ({ github, context, core }) => {
     await applyAll()
     core.endGroup()
     core.startGroup('Verifying settings were applied')
-    await new Promise(r => setTimeout(r, 2000)) // Allow API to propagate
-    await detectDrift()
+    // GitHub applies some settings (security, branch protection, rulesets)
+    // eventually, not synchronously; a fixed 2s sleep failed verification on
+    // slow propagation. Poll with backoff instead, and only the last attempt
+    // is allowed to record the failure.
+    const delaysMs = [2000, 4000, 8000, 16000]
+    for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+      await new Promise(r => setTimeout(r, delaysMs[attempt]))
+      const lastAttempt = attempt === delaysMs.length - 1
+      if (await detectDrift(!lastAttempt)) break
+      if (!lastAttempt) core.info(`Drift still visible; retrying (${attempt + 1}/${delaysMs.length})`)
+    }
     core.endGroup()
   }
 }

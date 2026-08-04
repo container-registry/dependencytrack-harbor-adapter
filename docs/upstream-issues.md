@@ -51,8 +51,10 @@ or env var to add a private CA, so any registry served from a corporate PKI fail
 Milestone 182 added a repeatable `--registry-ca-cert <PATH>` (each file may be a
 multi-certificate PEM bundle; all certificates are loaded) plus
 `--insecure-tls-skip-verify` as the explicitly-unsafe escape hatch, which logs a
-WARN at scan start. Both fail fast at scan startup — a missing, empty or non-PEM
+WARN at scan start. The CA-bundle path fails fast: a missing, empty or non-PEM
 file errors before any network call, naming the offending path.
+`--insecure-tls-skip-verify` does not fail anything — it deliberately succeeds
+with verification disabled, which is exactly why it is the unsafe escape hatch.
 
 **Adapter use:** `SCANNER_WAYBILL_REGISTRY_CA_CERTS` (comma-separated) becomes one
 `--registry-ca-cert` per path, and `SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY=true`

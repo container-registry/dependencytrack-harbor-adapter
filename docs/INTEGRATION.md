@@ -56,9 +56,24 @@ Notes:
 - `url` is the in-cluster / in-network address of the adapter. On the Harbor devenv this
   is the compose service name (e.g. `http://waybill-adapter:8080`); in Kubernetes it is
   the Service DNS name.
-- If the adapter is protected with `SCANNER_API_AUTH_API_KEY`, register with an
-  `Authorization` header instead (`"auth": "Bearer", "access_credential": "<key>"` per
-  the Harbor scanner registration schema).
+- If the adapter is protected with `SCANNER_API_AUTH_API_KEY`, tell Harbor to
+  authenticate **to the adapter** by registering with `"auth": "APIKey"` (the `-u`
+  admin credentials on the curl above authenticate you to Harbor and are unrelated):
+
+  ```json
+  {
+    "name": "waybill",
+    "url": "http://waybill-adapter:8080",
+    "auth": "APIKey",
+    "access_credential": "<value of SCANNER_API_AUTH_API_KEY>"
+  }
+  ```
+
+  With `auth: "APIKey"` Harbor sends every adapter request with the header
+  `X-ScannerAdapter-API-Key: <access_credential>`
+  (harbor `src/pkg/scan/rest/auth/auth.go`), which is exactly what the adapter's
+  `requireAPIKey` middleware validates. Do not use `"auth": "Basic"`/`"Bearer"`
+  here — those set an `Authorization` header the adapter does not read.
 - Do **not** set this scanner as the project/system default if that would remove a
   vulnerability scanner from the default slot.
 
@@ -110,11 +125,15 @@ volumeMounts:
 verification for every pull. It logs a WARN at startup and is for dev/CI against
 self-signed certs only — prefer the CA bundle in production.
 
-A pull failure is reported on the job with its cause: `RegistryPullAuth` (the
-registry rejected the credentials), `RegistryPullTransport` (TLS or scheme
-mismatch — usually a missing `--insecure-registry` or CA bundle), or
-`RegistryPull`. Those are configuration problems, distinct from a `WaybillExec`
-scanner failure.
+Known registry-pull errors are classified from waybill's stderr as
+`RegistryPullAuth` (the registry rejected the credentials),
+`RegistryPullTransport` (TLS or scheme mismatch — usually a missing
+`--insecure-registry` or CA bundle), or `RegistryPull` (other registry
+responses). The classification is heuristic — it matches waybill's own m182
+message strings — so a pull failure waybill reports differently (network/DNS
+errors, for example) can surface as `WaybillExec`. Treat the first two as
+configuration signals; do not assume every pull failure gets one of these
+labels.
 
 **Egress.** waybill runs with `--offline`: it makes no outbound enrichment calls
 (deps.dev, ClearlyDefined). See `docs/spike-m1.md` for why the flag, not the
@@ -253,3 +272,10 @@ still readable, so a rolling upgrade needs no flush.
 Finishing a job is a single `SET`. It used to be `GET`/`SET`/`GET`/`SET` (an
 `UpdateReport` followed by an `UpdateStatus`, each a read-modify-write), which
 moved the whole report across the connection four times per completed scan.
+
+**Redis trust note.** Queued job payloads carry the full scan request, including
+the per-scan Basic robot credential Harbor sends; they sit in Redis until a
+worker takes them (harbor-scanner-trivy has the same property). Treat the
+adapter's Redis as part of the credential trust boundary: keep it in-namespace
+or AUTH-protected, do not share the instance with untrusted tenants, and prefer
+short-lived per-scan robot accounts (Harbor's default) over long-lived ones.

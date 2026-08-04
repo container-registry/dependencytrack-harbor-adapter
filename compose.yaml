@@ -43,8 +43,10 @@ services:
     # docs/INTEGRATION.md.
     tmpfs:
       - /home/scanner:size=2G,mode=1777
+    # Loopback only: the dev adapter has no API key set, and /scan triggers
+    # server-side registry pulls, so it must not listen on every host interface.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     networks: [adapter]
 
 networks:

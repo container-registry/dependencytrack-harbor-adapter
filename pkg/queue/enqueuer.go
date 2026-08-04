@@ -2,8 +2,9 @@
 // distributed lock, ported from harbor-scanner-trivy. The lock TTL is derived
 // from the scan timeout rather than a copied constant (plan m5).
 //
-// Transport is a Redis list (RPUSH / BLPOP), not Pub/Sub: see worker.Start for
-// the two ways Pub/Sub silently loses an accepted job.
+// Transport is a Redis list (RPUSH / BLMOVE + processing list), not Pub/Sub:
+// see worker.Start for the two ways Pub/Sub silently loses an accepted job and
+// for the crash-recovery path.
 package queue
 
 import (
@@ -71,8 +72,8 @@ func NewEnqueuer(config etc.JobQueue, rdb *redis.Client, store persistence.Store
 		namespace: config.Namespace,
 		store:     store,
 		dispatch: func(ctx context.Context, payload []byte) error {
-			// RPUSH appends at the tail and the workers BLPOP from the head:
-			// opposite ends, so the queue is FIFO. (Same-end RPUSH/BRPOP would be
+			// RPUSH appends at the tail and the workers BLMOVE from the head:
+			// opposite ends, so the queue is FIFO. (Same-end push/pop would be
 			// a LIFO stack, and a steady arrival rate would starve the oldest
 			// scans indefinitely.) Unlike Publish this does not need a live
 			// subscriber: the entry sits in the list until a worker takes it, so
@@ -169,10 +170,11 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 // Two things this deliberately does not pretend:
 //
 // A dispatch error does not prove non-delivery. RPUSH may have been applied with
-// the reply lost, in which case a worker still has the job and will overwrite
-// this status when it starts. That is the better direction to be wrong in: a
-// job that runs anyway corrects itself, whereas a silent Queued record never
-// does.
+// the reply lost, in which case a worker still has the job — and may already
+// have moved it to Pending or even Finished by the time this write runs. That is
+// why the write is FailIfQueued rather than an unconditional UpdateStatus: only
+// a record still sitting in Queued is claimed as failed; anything a worker has
+// touched is left alone rather than having a real result overwritten.
 //
 // The write runs on a context detached from the caller's. The common reason
 // dispatch failed is that ctx is already done, and reusing it would make the
@@ -183,7 +185,7 @@ func (e *enqueuer) markUndispatched(ctx context.Context, logger *slog.Logger, ke
 	defer cancel()
 
 	msg := fmt.Sprintf("scan job could not be queued: %v (if the queue write did land, a worker may still run it)", cause)
-	if uErr := e.store.UpdateStatus(writeCtx, key, job.Failed, msg); uErr != nil {
+	if uErr := e.store.FailIfQueued(writeCtx, key, msg); uErr != nil {
 		logger.Warn("Could not mark an undispatched scan job as failed",
 			slog.String("err", uErr.Error()))
 	}

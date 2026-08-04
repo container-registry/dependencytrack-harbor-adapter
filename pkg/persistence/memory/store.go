@@ -77,9 +77,29 @@ func (s *store) Finish(_ context.Context, scanJobKey job.ScanJobKey, report json
 	// Clear Error as well: the Redis store writes the terminal record from
 	// scratch, so leaving a stale error here would make the two backends
 	// disagree on what a finished job looks like.
-	j.Report = report
+	// Copy the report for the same aliasing reason Get copies it on the way out:
+	// the Redis path serializes, so sharing bytes with the caller would make the
+	// two backends diverge.
+	j.Report = append(json.RawMessage(nil), report...)
 	j.Status = job.Finished
 	j.Error = ""
+	s.jobs[key] = j
+	return nil
+}
+
+func (s *store) FailIfQueued(_ context.Context, scanJobKey job.ScanJobKey, errorMsg string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := scanJobKey.String()
+	j, ok := s.jobs[key]
+	if !ok {
+		return xerrors.Errorf("scan job (%s): %w", key, persistence.ErrJobNotFound)
+	}
+	if j.Status != job.Queued {
+		return nil
+	}
+	j.Status = job.Failed
+	j.Error = errorMsg
 	s.jobs[key] = j
 	return nil
 }

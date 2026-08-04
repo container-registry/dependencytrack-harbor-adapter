@@ -317,7 +317,7 @@ tasks:
         sh: command -v waybill || true
     preconditions:
       - sh: '[ -n "{{.WAYBILL_BIN}}" ]'
-        msg: "waybill not found on PATH. Install it from https://github.com/kusari-oss/waybill/releases (WAYBILL_CLI_VERSION in versions.env is the pin), or set SCANNER_WAYBILL_BINARY yourself."
+        msg: "waybill not found on PATH. Install it from https://github.com/kusari-oss/waybill/releases (WAYBILL_CLI_VERSION in versions.env is the pin), or pass the path via `task run WAYBILL_BIN=/path/to/waybill`."
     env:
       SCANNER_LOG_LEVEL: debug
       SCANNER_REDIS_URL: redis://localhost:6379

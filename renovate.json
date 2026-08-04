@@ -26,6 +26,17 @@
       ]
     },
     {
+      "description": "Dockerfile: BASE_IMAGE ARG default. Must track DISTROLESS_* in versions.env, or a direct `docker build` silently uses a stale digest-pinned base while `task image` uses the fresh one.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Dockerfile$/"
+      ],
+      "matchStrings": [
+        "ARG BASE_IMAGE=(?<depName>[^:@\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
       "description": "versions.env: single-value tool and binary pins (including WAYBILL_CLI_VERSION -- do not add a second manager for it, both would extract the same dep)",
       "customType": "regex",
       "managerFilePatterns": [

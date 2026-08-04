@@ -76,19 +76,68 @@ func (s *store) Get(ctx context.Context, scanJobKey job.ScanJobKey) (*job.ScanJo
 	return scanJob, nil
 }
 
+// maxTxRetries bounds the optimistic-lock retries in mutate. Contention on one
+// job key is a two-writer race at most (worker vs. enqueue cleanup), so a
+// handful of retries is plenty; past that something is systemically wrong.
+const maxTxRetries = 3
+
+// mutate applies fn to the current record inside a WATCH/MULTI transaction, so
+// a concurrent writer cannot be silently overwritten by this read-modify-write.
+// fn returns false to skip the write (the record is left exactly as read).
+func (s *store) mutate(ctx context.Context, scanJobKey job.ScanJobKey, fn func(*job.ScanJob) (bool, error)) error {
+	key := s.keyForScanJob(scanJobKey)
+	for i := 0; i < maxTxRetries; i++ {
+		err := s.rdb.Watch(ctx, func(tx *redis.Tx) error {
+			value, err := tx.Get(ctx, key).Result()
+			if errors.Is(err, redis.Nil) {
+				return xerrors.Errorf("scan job (%s): %w", scanJobKey.String(), persistence.ErrJobNotFound)
+			} else if err != nil {
+				return err
+			}
+			scanJob, err := decode([]byte(value))
+			if err != nil {
+				return err
+			}
+			write, err := fn(scanJob)
+			if err != nil || !write {
+				return err
+			}
+			bytes, err := encode(*scanJob)
+			if err != nil {
+				return err
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.SetXX(ctx, key, bytes, s.cfg.ScanJobTTL)
+				return nil
+			})
+			return err
+		}, key)
+		if !errors.Is(err, redis.TxFailedErr) {
+			return err
+		}
+	}
+	return xerrors.Errorf("updating scan job (%s): gave up after %d optimistic-lock conflicts", scanJobKey.String(), maxTxRetries)
+}
+
 func (s *store) UpdateStatus(ctx context.Context, scanJobKey job.ScanJobKey, newStatus job.ScanJobStatus, errorMsg ...string) error {
-	scanJob, err := s.Get(ctx, scanJobKey)
-	if err != nil {
-		return err
-	}
-	if scanJob == nil {
-		return xerrors.Errorf("scan job (%s): %w", scanJobKey.String(), persistence.ErrJobNotFound)
-	}
-	scanJob.Status = newStatus
-	if len(errorMsg) > 0 {
-		scanJob.Error = errorMsg[0]
-	}
-	return s.update(ctx, *scanJob)
+	return s.mutate(ctx, scanJobKey, func(scanJob *job.ScanJob) (bool, error) {
+		scanJob.Status = newStatus
+		if len(errorMsg) > 0 {
+			scanJob.Error = errorMsg[0]
+		}
+		return true, nil
+	})
+}
+
+func (s *store) FailIfQueued(ctx context.Context, scanJobKey job.ScanJobKey, errorMsg string) error {
+	return s.mutate(ctx, scanJobKey, func(scanJob *job.ScanJob) (bool, error) {
+		if scanJob.Status != job.Queued {
+			return false, nil
+		}
+		scanJob.Status = job.Failed
+		scanJob.Error = errorMsg
+		return true, nil
+	})
 }
 
 // Finish writes the terminal record without reading it first. Every field is

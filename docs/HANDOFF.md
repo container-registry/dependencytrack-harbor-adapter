@@ -62,6 +62,12 @@ empty). The blockers are entirely in sibling repos the owner controls.
 
 ## a. What exists now, per milestone (with commit hashes)
 
+> **Historical snapshot (2026-07-09).** The hashes below are the branch topology
+> as of the original handoff. The branch has since gained rename + review-fix
+> commits (and the PR may be squash-merged), so do not verify against these
+> hashes — `git log --oneline main..HEAD` on the live branch is authoritative.
+> The per-milestone content descriptions still hold.
+
 `git -C . log --oneline main..feat/initial-adapter`:
 
 ```
@@ -173,8 +179,10 @@ docker buildx imagetools inspect 8gears.container-registry.com/8gcr/waybill-harb
 ### M9 — deploy to demo.goharbor.io via the deployment engine (needs M8)
 Cluster context comes from the engine (`aws eks update-kubeconfig` + tenant
 `cloud_provider: aws-harbor-cr-prod-eu-central`). **Prerequisite: the `deployment.bot` EKS
-access entry must exist** or kubectl is Unauthorized during deploy (see MEMORY:
-dcr-deploy-bot-eks-access-entry):
+access entry must exist** or kubectl is Unauthorized during deploy — every EKS region
+the deployment engine targets needs an access entry mapping the `deployment.bot` IAM
+user (the engine's credentials) to cluster admin; a cluster without one rejects every
+kubectl call with `Unauthorized`:
 ```
 aws eks list-access-entries \
   --cluster-name cr-eks-harbor-prod-eu-central-eksCluster-d382e91 \
@@ -210,7 +218,9 @@ bash scripts/c8n-smoke.sh demo.goharbor.io admin "$ADMIN_PASSWORD" zz-smoke   # 
 **Nothing publishes to `8gcr` until this federated robot exists.** `publish-image.yml`
 mints a GitHub OIDC token and logs in to `8gears.container-registry.com` with
 `username: jwt`, password = the OIDC token (keyless WIF). Required config on
-`8gears.container-registry.com` (see MEMORY: 8gears-registry-fedidp):
+`8gears.container-registry.com` (Administration -> Federated Identity Providers;
+the registry already runs global `github`/`gitlab` providers, so this is one more
+claim rule, not a new provider):
 
 - **Global GitHub OIDC provider** configured.
 - **Claim rule:** `repository == container-registry/waybill-harbor-adapter`.
@@ -323,18 +333,35 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
           namespace: demo-goharbor
         spec:
           podSelector: { matchLabels: { app: waybill-adapter } }
-          policyTypes: ["Ingress"]
+          # Egress is restricted too: /scan accepts a caller-influenced registry
+          # URL, so an unrestricted adapter pod is an SSRF pivot into the VPC.
+          # Allowed egress: DNS, the in-namespace Harbor registry path and
+          # Valkey/Redis. Enrichment egress stays off (SCANNER_WAYBILL_ENRICHMENT
+          # defaults to false), so no public-internet rule is needed.
+          policyTypes: ["Ingress", "Egress"]
           ingress:
             - from:
                 - podSelector: { matchLabels: { component: core } }
                 - podSelector: { matchLabels: { component: jobservice } }
               ports:
                 - { protocol: TCP, port: 8080 }
+          egress:
+            - to:
+                - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+              ports:
+                - { protocol: UDP, port: 53 }
+                - { protocol: TCP, port: 53 }
+            # Harbor core (token service + registry API) and Valkey, same namespace.
+            - to:
+                - podSelector: {}
 ```
 Register (M10) with `url: http://waybill-adapter.demo-goharbor:8080` (or
 `use_internal_addr: true`; D-1 handles the hairpin `https://demo.goharbor.io` pull path).
 Verify the `component:` label selectors match the harbor-next pod labels before relying on
-the NetworkPolicy (harbor-next may label differently than upstream goharbor).
+the NetworkPolicy (harbor-next may label differently than upstream goharbor). If the
+scanner must pull through the external `https://demo.goharbor.io` hostname instead of the
+in-namespace service, add an egress rule for that path (ingress controller namespace or
+443 to the LB CIDR) — do not fall back to an allow-all egress.
 
 ## e. Residual risks, open performance findings, open owner questions, deviations
 
@@ -376,11 +403,13 @@ struck from the lists below.
 
 Blocker/major (address before scaling beyond single-replica demo):
 - ~~**Queue is Redis Pub/Sub — silent job loss.**~~ **FIXED.** Replaced with a Redis list
-  (`RPUSH`/`BRPOP`): an entry persists with no subscriber and is delivered to exactly one
+  (`RPUSH`/`BLMOVE`): an entry persists with no subscriber and is delivered to exactly one
   consumer. Two miniredis regression tests pin the old failure modes (enqueue-before-worker,
-  150-job backlog vs the 100-message buffer). Residual gap: a worker that crashes *mid-scan*
-  still loses that job until the TTL — full at-least-once needs `BLMOVE` to a processing
-  list plus a reaper. (M3/M4/M5)
+  150-job backlog vs the 100-message buffer). The residual mid-scan-crash gap is closed
+  too: `BLMOVE` parks each payload on a processing list, completion `LREM`s it, and the
+  next `Start` requeues anything left behind (regression test:
+  `TestInFlightJobSurvivesWorkerCrash`). Semantics are at-least-once — after a crash a
+  job can run twice, fenced by the SetNX lock. (M3/M4/M5)
 - ~~**No pre-pull image-size cap.**~~ **FIXED** — `pkg/imageprobe` sums manifest layer sizes
   (one GET, no blobs; largest platform for an index) and `SCANNER_WAYBILL_MAX_IMAGE_SIZE`
   rejects above the cap before the pull. See the memory item below for the measurements that

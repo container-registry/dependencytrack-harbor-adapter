@@ -5,6 +5,7 @@
 package harbor
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -81,6 +82,46 @@ func (c ScanRequest) GetImageRef() (imageRef string, insecure bool, err error) {
 	imageRef = fmt.Sprintf("%s:%s/%s@%s", host, port, c.Artifact.Repository, c.Artifact.Digest)
 	insecure = registryURL.Scheme == "http"
 	return imageRef, insecure, nil
+}
+
+// ParseBasicAuthorization decodes a "Basic <base64>" authorization header value
+// into a username/password pair (split on the first ':' so robot secrets
+// containing ':' survive). It is shared by the /scan validation and the scan
+// controller so a credential the handler 202-accepts can never fail to parse in
+// the worker. Empty input means anonymous. Any non-Basic scheme is an error:
+// this adapter advertises Basic, and waybill's credential chain takes only a
+// username/password pair (docs/upstream-issues.md issue 3).
+func ParseBasicAuthorization(authorization string) (username, password string, err error) {
+	if authorization == "" {
+		return "", "", nil
+	}
+
+	scheme, value, ok := strings.Cut(authorization, " ")
+	if !ok {
+		return "", "", fmt.Errorf("parsing authorization: expected \"<scheme> <credentials>\"")
+	}
+
+	// RFC 9110 makes the scheme case-insensitive. Matching it exactly rejected
+	// "basic"/"BASIC" as an unrecognized scheme.
+	switch {
+	case strings.EqualFold(scheme, "Basic"):
+		creds, err := base64.StdEncoding.DecodeString(value)
+		if err != nil {
+			return "", "", fmt.Errorf("decoding basic authorization: %v", err)
+		}
+		user, pass, ok := strings.Cut(string(creds), ":")
+		if !ok {
+			// Without the separator this is not a credential pair. Accepting it
+			// queued a scan that failed later at registry auth, or silently
+			// became an anonymous pull when the payload was empty.
+			return "", "", fmt.Errorf("decoding basic authorization: expected \"username:password\"")
+		}
+		return user, pass, nil
+	case strings.EqualFold(scheme, "Bearer"):
+		return "", "", fmt.Errorf("bearer authorization is not supported; this adapter advertises Basic")
+	default:
+		return "", "", fmt.Errorf("unrecognized authorization scheme: %s", scheme)
+	}
 }
 
 type ScanResponse struct {

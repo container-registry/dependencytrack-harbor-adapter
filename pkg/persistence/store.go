@@ -29,4 +29,11 @@ type Store interface {
 	// multi-MB SPDX report across the wire four times. Every field of the record
 	// is known here, so the terminal write needs no read at all.
 	Finish(ctx context.Context, scanJobKey job.ScanJobKey, report json.RawMessage) error
+	// FailIfQueued marks the job Failed only while it is still Queued, atomically
+	// with respect to concurrent writers. It exists for enqueue cleanup: a
+	// dispatch error does not prove non-delivery (the queue write may have landed
+	// with the reply lost), so a worker may already be running — or have finished
+	// — the job. An unconditional Failed write would overwrite that real result.
+	// A record no longer Queued is left untouched and no error is returned.
+	FailIfQueued(ctx context.Context, scanJobKey job.ScanJobKey, errorMsg string) error
 }

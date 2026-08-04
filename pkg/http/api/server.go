@@ -71,16 +71,24 @@ func NewServer(config etc.API, handler http.Handler) (server *Server, err error)
 	return
 }
 
-func (s *Server) ListenAndServe() {
+// ListenAndServe serves in a goroutine and reports how listening ended on the
+// returned channel: nil after a graceful Shutdown, the underlying error
+// otherwise (bind failure, unreadable TLS material). The error is returned
+// rather than os.Exit'd here so the caller decides how to fail — a library
+// package exiting the process hid bind and certificate errors from main and
+// skipped its cleanup path.
+func (s *Server) ListenAndServe() <-chan error {
+	result := make(chan error, 1)
 	go func() {
-		if err := s.listenAndServe(); errors.Is(err, http.ErrServerClosed) {
+		err := s.listenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
 			slog.Debug("API server stopped listening for incoming connections")
+			result <- nil
 			return
-		} else if err != nil {
-			slog.Error("API server error", slog.String("err", err.Error()))
-			os.Exit(1)
 		}
+		result <- err
 	}()
+	return result
 }
 
 func (s *Server) listenAndServe() error {

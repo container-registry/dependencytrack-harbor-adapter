@@ -5,7 +5,10 @@ Recorded during the M7 devenv e2e (`test/devenv/run-e2e.sh`) against a live Harb
 adapter joined to `harbor-0_default`). Every claim below is from a real API call or
 core/jobservice log line captured during the run, not from documentation. Harbor
 core version: the `8gcr-main` fork at the checked-out HEAD; adapter image
-`waybill-harbor-adapter` (waybill `0.1.0-alpha.55`).
+`waybill-harbor-adapter`. The original run used waybill `0.1.0-alpha.55` under
+the D-1 self-pull; the e2e has since been re-run green with the current
+`v0.1.0-alpha.69` pin and waybill's native remote pull (docs/PR-BODY.md), and
+the Harbor-side behavior recorded here was unchanged.
 
 Fixtures (project `library`, repo `waybill-e2e`):
 - `:single` — the linux/amd64 child manifest of `alpine:3.20`

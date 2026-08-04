@@ -15,7 +15,8 @@ func TestGetImageRef(t *testing.T) {
 		wantInsecure bool
 	}{
 		{"https default port", "https://core.harbor.domain", "core.harbor.domain:443/library/alpine@sha256:abc", false},
-		{"http default port derives insecure", "http://core:8080", "core:8080/library/alpine@sha256:abc", true},
+		{"http default port derives insecure", "http://core.harbor.domain", "core.harbor.domain:80/library/alpine@sha256:abc", true},
+		{"http explicit port derives insecure", "http://core:8080", "core:8080/library/alpine@sha256:abc", true},
 		{"https explicit port", "https://reg.example.com:5443", "reg.example.com:5443/library/alpine@sha256:abc", false},
 	}
 	for _, tc := range cases {

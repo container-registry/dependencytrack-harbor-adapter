@@ -64,7 +64,7 @@ case "$MODE" in
   fail) echo "boom: something failed" 1>&2; exit 2 ;;
   pullauth) echo "Error: registry returned 401 with Basic auth challenge for GET http://core:8080/v2/library/alpine/manifests/sha256:deadbeef, but no credentials are configured for this registry." 1>&2; exit 1 ;;
   pulltls) echo "Error: TLS handshake failed for GET https://core:8080/v2/library/alpine/manifests/sha256:deadbeef. If this registry uses plain HTTP, pass --insecure-registry core:8080." 1>&2; exit 1 ;;
-  hang) sleep 30 ;;
+  hang) exec sleep 30 ;;
   null) printf 'null' > "$out"; exit 0 ;;
 esac
 
@@ -363,10 +363,10 @@ func TestGenerateSBOM_PullFailuresAreClassified(t *testing.T) {
 	}
 }
 
-// TestGenerateSBOM_ContextBackstop exercises the timeout path via a hanging stub
-// and a short parent context (the backstop that guards against waybill's own
-// timer wedging).
-func TestGenerateSBOM_ContextBackstop(t *testing.T) {
+// TestGenerateSBOM_ParentContextCancellation exercises the timeout path via a
+// hanging stub and a short parent context (the caller-owned deadline, e.g. the
+// worker's per-job deadline firing mid-scan).
+func TestGenerateSBOM_ParentContextCancellation(t *testing.T) {
 	w := NewWrapper(baseConfig(writeStub(t, "hang")))
 	jobDir := t.TempDir()
 
@@ -380,6 +380,29 @@ func TestGenerateSBOM_ContextBackstop(t *testing.T) {
 	var wErr *Error
 	require.ErrorAs(t, err, &wErr)
 	assert.Equal(t, CategoryTimeout, wErr.Category)
+}
+
+// TestGenerateSBOM_WrapperBackstop triggers the wrapper-owned cfg.Timeout+grace
+// deadline with the parent context left alive: the guard against waybill's own
+// --timeout timer wedging. Distinct from the parent-cancellation test above —
+// a regression that dropped the backstop would only show up here.
+func TestGenerateSBOM_WrapperBackstop(t *testing.T) {
+	old := backstopGrace
+	backstopGrace = 200 * time.Millisecond
+	t.Cleanup(func() { backstopGrace = old })
+
+	cfg := baseConfig(writeStub(t, "hang"))
+	cfg.Timeout = 100 * time.Millisecond // stub ignores --timeout, so only the backstop can fire
+	w := NewWrapper(cfg)
+
+	start := time.Now()
+	_, err := w.GenerateSBOM(context.Background(), target(), t.TempDir())
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 25*time.Second, "the wrapper backstop must kill the wedged subprocess")
+	var wErr *Error
+	require.ErrorAs(t, err, &wErr)
+	assert.Equal(t, CategoryTimeout, wErr.Category)
+	assert.Contains(t, wErr.Detail, "backstop")
 }
 
 func readLines(t *testing.T, path string) []string {

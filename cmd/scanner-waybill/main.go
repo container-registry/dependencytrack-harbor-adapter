@@ -200,7 +200,12 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		close(shutdownComplete)
 	}()
 
-	apiServer.ListenAndServe()
+	// A non-nil serve error is fatal (bind failure, bad TLS material) and must
+	// propagate out of run; a nil one means Shutdown closed the listener, so the
+	// only thing left is to wait for the signal handler to finish cleanup.
+	if err := <-apiServer.ListenAndServe(); err != nil {
+		return fmt.Errorf("api server: %w", err)
+	}
 	<-shutdownComplete
 	return nil
 }

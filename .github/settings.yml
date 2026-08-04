@@ -118,7 +118,9 @@ security:
   dependabot_security_updates:
     status: enabled
 
+# Only `state` while not-configured: apply-settings skips the API call for this
+# state, so extra fields (query_suite, languages) are never applied and only
+# create drift-check mismatches. When enabling, set `state: configured` and add
+# `query_suite`/`languages` back in the same commit.
 code_scanning:
   state: not-configured
-  query_suite: default
-  languages: [actions, go]

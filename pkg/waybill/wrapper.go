@@ -46,6 +46,11 @@ import (
 // own --timeout fires (cli-reference.md).
 const exitCodeTimeout = 124
 
+// backstopGrace is how far past waybill's own --timeout the wrapper-owned
+// context deadline sits. A var, not a const, so the backstop path is testable
+// without waiting 30 seconds; production never changes it.
+var backstopGrace = 30 * time.Second
+
 // reportFileName is the SBOM output file inside the per-job workdir.
 const reportFileName = "report.spdx.json"
 
@@ -125,7 +130,7 @@ func (w *wrapper) GenerateSBOM(ctx context.Context, target ScanTarget, jobDir st
 	runCtx := ctx
 	var cancel context.CancelFunc
 	if w.cfg.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, w.cfg.Timeout+30*time.Second)
+		runCtx, cancel = context.WithTimeout(ctx, w.cfg.Timeout+backstopGrace)
 		defer cancel()
 	}
 

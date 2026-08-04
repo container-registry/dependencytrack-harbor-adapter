@@ -99,7 +99,18 @@ fi
 echo "scanner uuid: $UUID"
 
 log "Asserting capabilities from GET /scanners/{uuid}"
-CAPS=$(curl -fsS -u "$AUTH" "$H/api/v2.0/scanners/$UUID")
+# Harbor populates capabilities lazily, only after a successful capability ping.
+# On a re-run against an already-registered scanner whose adapter container was
+# just recreated the field can read null, so force a re-ping via the metadata
+# endpoint and retry instead of failing before any scan ran.
+CAPS=""
+for i in $(seq 1 5); do
+  CAPS=$(curl -fsS -u "$AUTH" "$H/api/v2.0/scanners/$UUID")
+  if echo "$CAPS" | jq -e '.capabilities.support_sbom==true' >/dev/null; then break; fi
+  echo "  [$i] support_sbom not populated yet; re-pinging adapter via /scanners/{uuid}/metadata"
+  curl -fsS -u "$AUTH" "$H/api/v2.0/scanners/$UUID/metadata" >/dev/null 2>&1 || true
+  sleep 2
+done
 echo "$CAPS" | jq '.capabilities'
 echo "$CAPS" | jq -e '.capabilities.support_sbom==true' >/dev/null \
   || fail "capabilities.support_sbom is not true"
@@ -215,6 +226,9 @@ run_index() {
   children=$(crane manifest "$REG/$PROJECT/$REPO:index" \
     | jq -r '.manifests[] | select(.platform.os!="unknown") | .digest')
   n=$(echo "$children" | wc -w | tr -d ' ')
+  # Zero children would make every loop below a vacuous pass (0/0 done, no
+  # assertions run): a jq selector mismatch must fail loudly, not report green.
+  [ "$n" -gt 0 ] || fail "index has zero platform children (manifest parse/select failure?)"
   echo "index has $n platform children"
   trigger_scan "$dgst"
   # Completion signal = every child carries an sbom.harbor accessory. The index-level
@@ -235,8 +249,12 @@ run_index() {
   [ "$done_count" = "$n" ] || fail ":index only $done_count/$n children produced an SBOM"
 
   log "Asserting the index itself has NO accessory (fan-out target is the children)"
+  # `jq -e 'length == 0'` enforces the invariant (empty array or null); printing
+  # alone let an index-level accessory slide through green.
   curl -fsS -u "$AUTH" \
-    "$H/api/v2.0/projects/$PROJECT/repositories/$REPO/artifacts/$dgst/accessories" | jq -c '.'
+    "$H/api/v2.0/projects/$PROJECT/repositories/$REPO/artifacts/$dgst/accessories" \
+    | tee /dev/stderr | jq -e 'length == 0' >/dev/null \
+    || fail "the index itself carries an accessory; fan-out should target only the children"
 
   log "Asserting every child carries an sbom.harbor accessory + valid SPDX 2.3"
   for c in $children; do

@@ -69,8 +69,8 @@ func NewWorker(config etc.JobQueue, lockTTL time.Duration, rdb *redis.Client, co
 	}
 }
 
-// Start runs `concurrency` consumers, each blocking on its own BLPOP against the
-// shared job list.
+// Start runs `concurrency` consumers, each blocking on its own BLMOVE against
+// the shared job list.
 //
 // This is deliberately a Redis list, not Pub/Sub. Pub/Sub drops a job whenever
 // there is no subscriber at publish time (a restart window, or a worker that has
@@ -79,15 +79,50 @@ func NewWorker(config etc.JobQueue, lockTTL time.Duration, rdb *redis.Client, co
 // scanArtifact holds the reader loop for the whole scan. In both cases the store
 // record stays Queued and Harbor 302-polls a job no worker will ever pick up,
 // until the TTL expires. A list has neither failure mode: RPUSH persists, and
-// BLPOP hands each entry to exactly one consumer whenever one shows up.
+// BLMOVE hands each entry to exactly one consumer whenever one shows up.
+//
+// BLMOVE rather than BLPOP: BLPOP deletes the only queued copy at dequeue, so a
+// worker crash (OOM kill, SIGKILL) between dequeue and completion lost the job
+// with the store record stuck Queued until its TTL. BLMOVE parks the payload on
+// a processing list instead; it is removed on completion and anything still
+// there at the next Start is requeued.
 func (w *worker) Start(ctx context.Context) {
 	ctx, w.cancel = context.WithCancel(ctx)
+	w.requeueOrphans(ctx)
 	for i := 0; i < w.concurrency; i++ {
 		w.done.Add(1)
 		go func() {
 			defer w.done.Done()
 			w.consume(ctx)
 		}()
+	}
+}
+
+// requeueOrphans moves payloads a previous run left on the processing list back
+// onto the job list. With one adapter instance (the shipped deployment) anything
+// found here is an orphan by definition. With several replicas this can requeue
+// a job another replica is still scanning; the SetNX job lock keeps it from
+// running twice concurrently and the terminal store writes are idempotent, so
+// the cost is a duplicate scan, never a wrong result.
+func (w *worker) requeueOrphans(ctx context.Context) {
+	src, dst := redisProcessingList(w.namespace), redisJobList(w.namespace)
+	moved := 0
+	for {
+		// RIGHT->LEFT preserves FIFO order: the tail of the processing list lands
+		// at the head of the job list first, so after the loop the oldest orphan
+		// is at the head.
+		_, err := w.rdb.LMove(ctx, src, dst, "RIGHT", "LEFT").Result()
+		if err != nil {
+			if !errors.Is(err, redis.Nil) {
+				slog.Error("Failed to requeue in-flight scan jobs from a previous run",
+					slog.String("err", err.Error()))
+			}
+			break
+		}
+		moved++
+	}
+	if moved > 0 {
+		slog.Info("Requeued scan jobs a previous run left in-flight", slog.Int("count", moved))
 	}
 }
 
@@ -116,6 +151,7 @@ func (w *worker) Stop() {
 
 func (w *worker) consume(ctx context.Context) {
 	key := redisJobList(w.namespace)
+	procKey := redisProcessingList(w.namespace)
 	for {
 		select {
 		case <-w.stop:
@@ -125,10 +161,10 @@ func (w *worker) consume(ctx context.Context) {
 		default:
 		}
 
-		res, err := w.rdb.BLPop(ctx, popTimeout, key).Result()
+		payload, err := w.rdb.BLMove(ctx, key, procKey, "LEFT", "RIGHT", popTimeout).Result()
 		if err != nil {
 			if errors.Is(err, redis.Nil) {
-				continue // BLPOP timed out with an empty list: normal idle.
+				continue // BLMOVE timed out with an empty list: normal idle.
 			}
 			if ctx.Err() != nil {
 				return
@@ -145,14 +181,29 @@ func (w *worker) consume(ctx context.Context) {
 			}
 			continue
 		}
-		// BLPOP returns [key, value].
-		if len(res) != 2 {
-			slog.Error("Unexpected BLPOP response", slog.Int("len", len(res)))
-			continue
-		}
-		if err := w.scanArtifact(ctx, res[1]); err != nil {
+		if err := w.scanArtifact(ctx, payload); err != nil {
 			slog.Error("Failed to scan artifact", slog.String("err", err.Error()))
 		}
+		w.ack(ctx, procKey, payload)
+	}
+}
+
+// ackTimeout bounds the processing-list removal after a job completes. It runs
+// detached from ctx: at shutdown the consume context is already canceled, and a
+// job that DID complete (Scan writes its terminal status on a detached context
+// too) must still be acknowledged, or the next Start would requeue and re-run it.
+const ackTimeout = 5 * time.Second
+
+func (w *worker) ack(ctx context.Context, procKey, payload string) {
+	ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ackTimeout)
+	defer cancel()
+	// Payloads are unique in practice (job key + EnqueuedAt), so LREM 1 removes
+	// exactly this job's parked copy. If the removal fails the payload is
+	// requeued at the next Start; the SetNX lock and idempotent store writes make
+	// that a duplicate scan at worst, which is the right direction to fail in.
+	if err := w.rdb.LRem(ackCtx, procKey, 1, payload).Err(); err != nil {
+		slog.Warn("Failed to acknowledge completed scan job; it may be requeued on restart",
+			slog.String("err", err.Error()))
 	}
 }
 
@@ -208,4 +259,10 @@ func observeQueueWait(j Job) {
 
 func redisLockKey(namespace, jobID string) string {
 	return redisJobList(namespace) + ":lock:" + jobID
+}
+
+// redisProcessingList holds payloads between dequeue and completion, so a
+// worker crash mid-scan leaves the job recoverable (see Start).
+func redisProcessingList(namespace string) string {
+	return redisJobList(namespace) + ":processing"
 }

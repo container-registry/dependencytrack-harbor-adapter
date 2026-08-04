@@ -69,7 +69,10 @@ runtime was proven against a byte-identical local reconstruction (see "Gate" bel
 
 ## Task 1 — image existence, multi-arch, tag+digest
 
-`v0.1.0-alpha.55` is the newest release of `kusari-oss/waybill`:
+`v0.1.0-alpha.55` was the newest release at the time of this spike (2026-07-09,
+mikebom era). It is NOT the current pin — `versions.env` pins `v0.1.0-alpha.69`,
+the floor for the m182 remote-pull flags; copying the alpha.55 references below
+selects obsolete artifacts:
 
 ```
 $ gh api /repos/kusari-oss/waybill/releases?per_page=5 --jq '.[].tag_name'
@@ -193,8 +196,15 @@ and documents the scaffolding no-op with the `testdata/vex-supplement.cdx.json` 
 
 ## Task 5 — upstream gaps (confirmed from source; issue texts in docs/upstream-issues.md)
 
-All three block waybill's own remote-pull path against the Harbor devenv (`registry.url =
-http://core:8080`) and are the reason for D-1 (adapter pulls the artifact itself). Evidence:
+> **Superseded.** Gaps 1 and 2 below were fixed by waybill milestone 182
+> (`--insecure-registry`, `--registry-ca-cert`, `--insecure-tls-skip-verify`),
+> which is why D-1 was reversed and the adapter now uses waybill's native
+> remote pull. Only gap 3 (caller-supplied Bearer token) is still open. The
+> evidence below is the alpha.55-era record that justified filing them.
+
+At alpha.55, all three blocked waybill's own remote-pull path against the Harbor devenv
+(`registry.url = http://core:8080`) and were the reason for D-1 (adapter pulls the
+artifact itself). Evidence:
 
 1. **plain-HTTP registry unsupported** — `waybill-cli/src/scan_fs/oci_pull/registry.rs:455,464`
    hardcode `format!("https://{registry}/v2/...")` in `manifest_url`/`blob_url`. No scheme

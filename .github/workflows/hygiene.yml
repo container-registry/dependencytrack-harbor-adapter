@@ -118,8 +118,17 @@ jobs:
             while IFS= read -r line || [ -n "$line" ]; do
               if echo "$line" | grep -qE '^\s*(-\s+)?uses:\s+'; then
                 ref=$(echo "$line" | sed 's/.*uses:[[:space:]]*//' | awk '{print $1}')
-                # Skip local actions (starting with ./) and docker:// references
-                if echo "$ref" | grep -qE '^(\.\/|docker://)'; then
+                # Skip local actions (starting with ./); they have no ref to pin.
+                if echo "$ref" | grep -qE '^\.\/'; then
+                  continue
+                fi
+                # Docker actions are pinned by image digest, not a git SHA. A
+                # bare tag is mutable and would otherwise sail through this gate.
+                if echo "$ref" | grep -qE '^docker://'; then
+                  if ! echo "$ref" | grep -qE '@sha256:[a-f0-9]{64}$'; then
+                    echo "UNPINNED DOCKER ACTION (needs @sha256:<digest>): $file -> $ref"
+                    failed=1
+                  fi
                   continue
                 fi
                 if ! echo "$line" | grep -qE '@[a-f0-9]{40}[[:space:]]+#[[:space:]]*v[0-9]'; then
