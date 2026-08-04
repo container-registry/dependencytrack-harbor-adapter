@@ -171,6 +171,30 @@ tasks:
       - cmd: echo "{{.WAYBILL_CLI_VERSION}}" > bin/{{.PLATFORM}}/.waybill-version
         silent: true
 
+  waybill:checksums:
+    desc: "Recompute WAYBILL_CLI_SHA256_* for the pinned WAYBILL_CLI_VERSION"
+    # Renovate bumps WAYBILL_CLI_VERSION but cannot recompute these digests, so
+    # without this every bump PR leaves the pins pointing at the previous release
+    # and every build:waybill fails checksum verification.
+    silent: true
+    cmds:
+      - |
+        set -eu
+        ver='{{.WAYBILL_CLI_VERSION}}'
+        echo "waybill ${ver}" >&2
+        for pair in amd64:x86_64 arm64:aarch64; do
+          goarch="${pair%%:*}"; rust_arch="${pair#*:}"
+          url="https://github.com/kusari-oss/waybill/releases/download/${ver}/waybill-${ver}-${rust_arch}-unknown-linux-gnu.tar.gz"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sum=$(curl -sSfL "$url" | sha256sum | cut -d' ' -f1)
+          else
+            sum=$(curl -sSfL "$url" | shasum -a 256 | cut -d' ' -f1)
+          fi
+          printf 'WAYBILL_CLI_SHA256_LINUX_%s=%s\n' "$(echo "$goarch" | tr '[:lower:]' '[:upper:]')" "$sum"
+        done
+        echo "" >&2
+        echo "Replace the WAYBILL_CLI_SHA256_* lines in versions.env with the above." >&2
+
   # ============================================================================
   # Lint & Vulnerability Checks
   # ============================================================================

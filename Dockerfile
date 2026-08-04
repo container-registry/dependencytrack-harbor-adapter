@@ -13,7 +13,11 @@
 # Digest-pinned distroless cc-debian12:nonroot (glibc + libssl + ca-certificates,
 # nonroot uid 65532, no shell). BASE_IMAGE is passed by `task image` from versions.env.
 # ARGs consumed by a FROM must be declared before the first FROM.
-ARG BASE_IMAGE=gcr.io/distroless/cc-debian12:nonroot
+# Digest-pinned so a direct `docker build` has the same provenance as `task image`,
+# which overrides this from versions.env. A bare :nonroot tag is mutable, so the
+# two paths could otherwise produce images with different bases.
+# Keep in sync with DISTROLESS_* in versions.env (Renovate updates both).
+ARG BASE_IMAGE=gcr.io/distroless/cc-debian12:nonroot@sha256:ce0d66bc0f64aae46e6a03add867b07f42cc7b8799c949c2e898057b7f75a151
 
 # ---- final image -----------------------------------------------------------------
 FROM ${BASE_IMAGE}

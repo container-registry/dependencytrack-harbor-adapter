@@ -16,16 +16,21 @@ const (
 	Failed
 )
 
+// scanJobStatusNames is indexed by ScanJobStatus. String bounds against its
+// length rather than a literal, so adding a status cannot silently start
+// rendering as "Unknown".
+var scanJobStatusNames = [...]string{
+	"Queued",
+	"Pending",
+	"Finished",
+	"Failed",
+}
+
 func (s ScanJobStatus) String() string {
-	if s < 0 || s > 3 {
+	if s < 0 || int(s) >= len(scanJobStatusNames) {
 		return "Unknown"
 	}
-	return [...]string{
-		"Queued",
-		"Pending",
-		"Finished",
-		"Failed",
-	}[s]
+	return scanJobStatusNames[s]
 }
 
 // ScanJobKey uniquely identifies a scan job. For SBOM reports MediaType is set

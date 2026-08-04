@@ -246,6 +246,10 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
             metadata:
               labels: { app: waybill-adapter }
             spec:
+              # The adapter calls Harbor and Redis, never the Kubernetes API, so
+              # a projected SA token in the pod is only an escalation path from
+              # any SSRF or RCE in the scan path.
+              automountServiceAccountToken: false
               imagePullSecrets:
                 - name: 8g-registry-secret
               securityContext:
@@ -266,8 +270,14 @@ the 1Gi container limit and OOM-kill on mid-size images (open perf finding M1/ma
                     - { name: SCANNER_JOB_QUEUE_REDIS_NAMESPACE, value: "harbor.scanner.waybill:job-queue" }
                     - { name: SCANNER_WAYBILL_WORK_DIR, value: "/home/scanner/work" }
                     - { name: SCANNER_JOB_QUEUE_WORKER_CONCURRENCY, value: "1" }
-                    # Optional API-key auth (SSRF mitigation); set to a sops secret if used:
-                    # - { name: SCANNER_API_AUTH_API_KEY, value: "<secret>" }
+                    - { name: SCANNER_WAYBILL_MAX_IMAGE_SIZE, value: "536870912" }   # pairs with the 4Gi limit below
+                    # Optional API-key auth (SSRF mitigation). secretKeyRef, never a
+                    # literal: a `value:` here lands in the Deployment spec, so it is
+                    # readable by anyone with `get deployment` and shows up in
+                    # `kubectl describe` and every diff of this file.
+                    # - name: SCANNER_API_AUTH_API_KEY
+                    #   valueFrom:
+                    #     secretKeyRef: { name: waybill-adapter-api-key, key: api-key }
                   securityContext:
                     readOnlyRootFilesystem: true
                     allowPrivilegeEscalation: false

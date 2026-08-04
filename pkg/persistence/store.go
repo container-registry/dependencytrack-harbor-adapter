@@ -20,7 +20,7 @@ var ErrJobNotFound = errors.New("scan job not found (queued longer than the scan
 type Store interface {
 	Create(ctx context.Context, scanJob job.ScanJob) error
 	Get(ctx context.Context, scanJobKey job.ScanJobKey) (*job.ScanJob, error)
-	UpdateStatus(ctx context.Context, scanJobKey job.ScanJobKey, newStatus job.ScanJobStatus, error ...string) error
+	UpdateStatus(ctx context.Context, scanJobKey job.ScanJobKey, newStatus job.ScanJobStatus, errorMsg ...string) error
 	// Finish stores the pre-marshaled report envelope (json.RawMessage) and marks
 	// the job Finished in a single write.
 	//
