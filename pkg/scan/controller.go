@@ -276,8 +276,10 @@ func applyAuth(target *waybill.ScanTarget, authorization string) error {
 		return xerrors.Errorf("parsing authorization: expected \"<scheme> <credentials>\"")
 	}
 
-	switch scheme {
-	case "Basic":
+	// RFC 9110 makes the scheme case-insensitive. Matching it exactly rejected
+	// "basic"/"BASIC" as an unrecognized scheme.
+	switch {
+	case strings.EqualFold(scheme, "Basic"):
 		creds, err := base64.StdEncoding.DecodeString(value)
 		if err != nil {
 			return xerrors.Errorf("decoding basic authorization: %v", err)
@@ -292,7 +294,7 @@ func applyAuth(target *waybill.ScanTarget, authorization string) error {
 		target.Username = username
 		target.Password = password
 		return nil
-	case "Bearer":
+	case strings.EqualFold(scheme, "Bearer"):
 		return xerrors.Errorf("bearer authorization is not supported; this adapter advertises Basic")
 	default:
 		return xerrors.Errorf("unrecognized authorization scheme: %s", scheme)

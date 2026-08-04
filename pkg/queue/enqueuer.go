@@ -29,6 +29,10 @@ import (
 
 const scanArtifactJobName = "scan_artifact"
 
+// undispatchedWriteTimeout bounds the cleanup write for a job that could not be
+// queued. It runs detached from the request context, so it needs its own bound.
+const undispatchedWriteTimeout = 5 * time.Second
+
 type Enqueuer interface {
 	Enqueue(ctx context.Context, request harbor.ScanRequest) (string, error)
 }
@@ -149,20 +153,40 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 
 	if err = e.dispatch(ctx, b); err != nil {
 		metrics.EnqueueFailuresTotal.Inc()
-		// The store record already exists but no worker will ever see the job.
-		// Left Queued it is indistinguishable from a job that is merely waiting,
-		// so Harbor would poll it until the TTL. Mark it Failed so the poll
-		// reports the real cause instead.
-		if uErr := e.store.UpdateStatus(ctx, scanJob.Key, job.Failed, err.Error()); uErr != nil {
-			logger.Warn("Could not mark an undispatched scan job as failed",
-				slog.String("err", uErr.Error()))
-		}
+		e.markUndispatched(ctx, logger, scanJob.Key, err)
 		return xerrors.Errorf("enqueuing scan artifact job: %w", err)
 	}
 
 	metrics.EnqueuedTotal.Inc()
 	logger.Debug("Successfully enqueued scan job")
 	return nil
+}
+
+// markUndispatched records a job whose store record exists but whose dispatch
+// failed. Left Queued it is indistinguishable from a job merely waiting for a
+// worker, so Harbor would poll it until the TTL rather than being told why.
+//
+// Two things this deliberately does not pretend:
+//
+// A dispatch error does not prove non-delivery. RPUSH may have been applied with
+// the reply lost, in which case a worker still has the job and will overwrite
+// this status when it starts. That is the better direction to be wrong in: a
+// job that runs anyway corrects itself, whereas a silent Queued record never
+// does.
+//
+// The write runs on a context detached from the caller's. The common reason
+// dispatch failed is that ctx is already done, and reusing it would make the
+// cleanup fail for exactly the same reason -- the same trap that stranded
+// terminal writes in scan.controller.
+func (e *enqueuer) markUndispatched(ctx context.Context, logger *slog.Logger, key job.ScanJobKey, cause error) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undispatchedWriteTimeout)
+	defer cancel()
+
+	msg := fmt.Sprintf("scan job could not be queued: %v (if the queue write did land, a worker may still run it)", cause)
+	if uErr := e.store.UpdateStatus(writeCtx, key, job.Failed, msg); uErr != nil {
+		logger.Warn("Could not mark an undispatched scan job as failed",
+			slog.String("err", uErr.Error()))
+	}
 }
 
 // makeIdentifier fails rather than returning an empty ID: every job would then

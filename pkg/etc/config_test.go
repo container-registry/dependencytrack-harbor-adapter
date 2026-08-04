@@ -57,3 +57,21 @@ func TestClientCAsWithoutTLSIsRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires TLS")
 }
+
+// TestNonPositiveServerTimeoutsAreRejected: net/http reads a zero timeout as
+// "no timeout", so a typo silently removes slow-client protection rather than
+// tightening it.
+func TestNonPositiveServerTimeoutsAreRejected(t *testing.T) {
+	for _, name := range []string{
+		"SCANNER_API_SERVER_READ_TIMEOUT",
+		"SCANNER_API_SERVER_WRITE_TIMEOUT",
+		"SCANNER_API_SERVER_IDLE_TIMEOUT",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "0s")
+			_, err := GetConfig()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), name)
+		})
+	}
+}

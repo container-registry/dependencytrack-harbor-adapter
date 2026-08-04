@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"golang.org/x/xerrors"
@@ -106,15 +108,29 @@ func (mt *MIMEType) String() string {
 // adapter produces only SBOM reports, so it accepts the SBOM report type (with
 // or without the version parameter). Anything else is unsupported.
 func (mt *MIMEType) Parse(value string) error {
-	switch strings.TrimSpace(value) {
-	case MimeTypeSecuritySBOMReport.String(),
-		fmt.Sprintf("%s/%s", MimeTypeSecuritySBOMReport.Type, MimeTypeSecuritySBOMReport.Subtype):
-		mt.Type = MimeTypeSecuritySBOMReport.Type
-		mt.Subtype = MimeTypeSecuritySBOMReport.Subtype
-		mt.Params = MimeTypeSecuritySBOMReport.Params
-		return nil
+	// mime.ParseMediaType rather than a string switch: the switch only matched
+	// this adapter's own spelling, so a client sending the same type without the
+	// space after ";" -- which RFC 9110 permits and other clients emit -- got a
+	// 415 for a request it had every right to make.
+	mediaType, params, err := mime.ParseMediaType(value)
+	if err != nil {
+		return xerrors.Errorf("unsupported mime type: %s: %w", value, err)
 	}
-	return xerrors.Errorf("unsupported mime type: %s", value)
+
+	want := fmt.Sprintf("%s/%s", MimeTypeSecuritySBOMReport.Type, MimeTypeSecuritySBOMReport.Subtype)
+	if mediaType != want {
+		return xerrors.Errorf("unsupported mime type: %s", value)
+	}
+	// The version parameter is optional, but a version we do not produce is not
+	// something to answer with a report anyway.
+	if v, ok := params["version"]; ok && v != MimeTypeSecuritySBOMReport.Params["version"] {
+		return xerrors.Errorf("unsupported mime type version: %s", value)
+	}
+
+	mt.Type = MimeTypeSecuritySBOMReport.Type
+	mt.Subtype = MimeTypeSecuritySBOMReport.Subtype
+	mt.Params = MimeTypeSecuritySBOMReport.Params
+	return nil
 }
 
 func (mt *MIMEType) Equal(other MIMEType) bool {
@@ -170,11 +186,37 @@ func (h *BaseHandler) WriteRawJSON(res http.ResponseWriter, req *http.Request, p
 	}
 }
 
+// clientAcceptsGzip honors the q-values in Accept-Encoding. A substring match
+// treated "gzip;q=0" -- the explicit way to refuse an encoding -- as acceptance,
+// so a client that said it could not decompress got a compressed report.
 func clientAcceptsGzip(req *http.Request) bool {
 	if req == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(req.Header.Get(HeaderAcceptEncoding)), "gzip")
+
+	wildcard := false
+	for _, directive := range strings.Split(req.Header.Get(HeaderAcceptEncoding), ",") {
+		name, params, _ := strings.Cut(strings.TrimSpace(directive), ";")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "gzip" && name != "*" {
+			continue
+		}
+
+		acceptable := true
+		if _, q, found := strings.Cut(strings.ToLower(params), "q="); found {
+			if weight, err := strconv.ParseFloat(strings.TrimSpace(q), 64); err == nil {
+				acceptable = weight > 0
+			}
+		}
+
+		// An explicit "gzip" settles it either way; "*" only fills in when gzip
+		// is not named at all.
+		if name == "gzip" {
+			return acceptable
+		}
+		wildcard = acceptable
+	}
+	return wildcard
 }
 
 func (h *BaseHandler) WriteJSONError(res http.ResponseWriter, err Error) {

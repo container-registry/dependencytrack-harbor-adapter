@@ -184,6 +184,17 @@ func (c Config) validate() error {
 		return fmt.Errorf("SCANNER_API_SERVER_CLIENT_CAS requires TLS " +
 			"(SCANNER_API_SERVER_TLS_CERTIFICATE and SCANNER_API_SERVER_TLS_KEY); client certificates are never verified without it)")
 	}
+	// A non-positive server timeout means "no timeout" to net/http, so a typo
+	// silently removes the slow-client protection instead of tightening it.
+	for name, d := range map[string]time.Duration{
+		"SCANNER_API_SERVER_READ_TIMEOUT":  c.API.ReadTimeout,
+		"SCANNER_API_SERVER_WRITE_TIMEOUT": c.API.WriteTimeout,
+		"SCANNER_API_SERVER_IDLE_TIMEOUT":  c.API.IdleTimeout,
+	} {
+		if d <= 0 {
+			return fmt.Errorf("%s must be positive, got %s", name, d)
+		}
+	}
 	if c.Waybill.MaxImageSize < 0 {
 		return fmt.Errorf("SCANNER_WAYBILL_MAX_IMAGE_SIZE must not be negative, got %d", c.Waybill.MaxImageSize)
 	}

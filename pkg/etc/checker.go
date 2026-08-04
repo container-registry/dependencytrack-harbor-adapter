@@ -2,6 +2,7 @@ package etc
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"os"
@@ -43,8 +44,8 @@ func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinge
 	// a scan is already in flight: the failure would surface as a failed Harbor
 	// scan rather than as a broken deployment. Check the paths at startup instead.
 	for _, path := range config.Waybill.RegistryCACerts {
-		if !fileExists(path) {
-			return fmt.Errorf("registry CA certificate file does not exist: %s", path)
+		if err := checkCertBundle(path); err != nil {
+			return fmt.Errorf("registry CA certificate %s: %w", path, err)
 		}
 	}
 	if config.Waybill.InsecureSkipVerify {
@@ -61,15 +62,15 @@ func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinge
 	}
 
 	if config.API.IsTLSEnabled() {
-		if !fileExists(config.API.TLSCertificate) {
-			return fmt.Errorf("TLS certificate file does not exist: %s", config.API.TLSCertificate)
+		if err := checkReadable(config.API.TLSCertificate); err != nil {
+			return fmt.Errorf("TLS certificate %s: %w", config.API.TLSCertificate, err)
 		}
-		if !fileExists(config.API.TLSKey) {
-			return fmt.Errorf("TLS private key file does not exist: %s", config.API.TLSKey)
+		if err := checkReadable(config.API.TLSKey); err != nil {
+			return fmt.Errorf("TLS private key %s: %w", config.API.TLSKey, err)
 		}
 		for _, path := range config.API.ClientCAs {
-			if !fileExists(path) {
-				return fmt.Errorf("ClientCA file does not exist: %s", path)
+			if err := checkCertBundle(path); err != nil {
+				return fmt.Errorf("client CA %s: %w", path, err)
 			}
 		}
 	}
@@ -118,10 +119,38 @@ func ensureDirWritable(path string) error {
 	return nil
 }
 
-func fileExists(name string) bool {
+// checkReadable opens the file rather than stat-ing it. A stat passes on a file
+// the process cannot read -- the usual case being a Secret mounted with the
+// wrong mode or fsGroup -- and the failure then surfaced on the first scan or on
+// the TLS handshake instead of at startup.
+func checkReadable(name string) error {
 	info, err := os.Stat(name)
-	if os.IsNotExist(err) {
-		return false
+	if err != nil {
+		return err
 	}
-	return err == nil && !info.IsDir()
+	if info.IsDir() {
+		return fmt.Errorf("is a directory, not a file")
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// checkCertBundle additionally parses the bundle. An unparseable CA file yields
+// an empty pool, and an empty pool with RequireAndVerifyClientCert rejects every
+// client certificate -- a total outage that presents as a per-client TLS error.
+func checkCertBundle(name string) error {
+	if err := checkReadable(name); err != nil {
+		return err
+	}
+	pem, err := os.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(pem) {
+		return fmt.Errorf("contains no usable certificate")
+	}
+	return nil
 }

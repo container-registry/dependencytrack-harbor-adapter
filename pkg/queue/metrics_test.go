@@ -16,6 +16,7 @@ import (
 
 	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
 )
 
@@ -140,4 +141,48 @@ func TestUndispatchedJobIsMarkedFailed(t *testing.T) {
 	require.NotNil(t, got, "the record is created before dispatch, so it exists")
 	assert.Equal(t, job.Failed, got.Status, "an undispatched job must not be left Queued")
 	assert.Contains(t, got.Error, "transport down")
+}
+
+// TestUndispatchedCleanupSurvivesACanceledContext pins the detached write. The
+// usual reason a dispatch fails is that the request context is already done, and
+// reusing it made the cleanup fail for exactly the same reason -- leaving the
+// record at Queued, which is the state this path exists to avoid.
+func TestUndispatchedCleanupSurvivesACanceledContext(t *testing.T) {
+	store := memory.NewStore()
+	var dispatched job.ScanJobKey
+
+	ctx, cancel := context.WithCancel(context.Background())
+	enq := &enqueuer{
+		namespace: "ns",
+		store:     ctxStore{Store: store},
+		dispatch: func(dctx context.Context, payload []byte) error {
+			var j Job
+			require.NoError(t, json.Unmarshal(payload, &j))
+			dispatched = j.Key
+			cancel() // the request went away mid-dispatch
+			return dctx.Err()
+		},
+	}
+
+	_, err := enq.Enqueue(ctx, sbomRequest())
+	require.Error(t, err)
+	require.NotEmpty(t, dispatched.ID)
+
+	got, err := store.Get(context.Background(), dispatched)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, job.Failed, got.Status, "the cleanup must not inherit the dead context")
+}
+
+// ctxStore rejects writes on an expired context, the way go-redis does. The
+// memory store ignores ctx, so it cannot exercise the detached write on its own.
+type ctxStore struct {
+	persistence.Store
+}
+
+func (s ctxStore) UpdateStatus(ctx context.Context, key job.ScanJobKey, status job.ScanJobStatus, msg ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.Store.UpdateStatus(ctx, key, status, msg...)
 }

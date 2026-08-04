@@ -225,32 +225,28 @@ func (p *prober) indexSize(idx v1.ImageIndex, depth int) (int64, error) {
 	// wave an arbitrarily large artifact straight through the cap.
 	var largestMatching, largestAny int64
 	matched := false
+	// fallbackErr defers a failure on a child the configured platform does not
+	// select. Aborting on one would let a broken sibling -- an attestation with
+	// a bad digest, a child the registry garbage-collected -- fail the whole
+	// probe, and a failed probe runs the scan unguarded. It only matters if the
+	// fallback ends up being needed.
+	var fallbackErr error
 
 	for _, child := range manifest.Manifests {
 		selected := p.platform == "" || child.Platform == nil || platformMatches(p.platform, child.Platform)
 
-		var size int64
-		switch {
-		case child.MediaType.IsIndex():
-			nested, err := idx.ImageIndex(child.Digest)
-			if err != nil {
-				return 0, fmt.Errorf("reading nested index %s: %w", child.Digest, err)
-			}
-			if size, err = p.indexSize(nested, depth+1); err != nil {
+		size, err := p.childSize(idx, child, depth)
+		if err != nil {
+			if selected {
 				return 0, err
 			}
-		case child.MediaType.IsImage():
-			img, err := idx.Image(child.Digest)
-			if err != nil {
-				return 0, fmt.Errorf("reading index child %s: %w", child.Digest, err)
+			if fallbackErr == nil {
+				fallbackErr = err
 			}
-			if size, err = manifestSize(img); err != nil {
-				return 0, err
-			}
-		default:
-			// Attestations and signatures ride along in the index as non-image
-			// artifacts. waybill does not pull them for a scan.
 			continue
+		}
+		if size < 0 {
+			continue // not a child waybill would pull
 		}
 
 		if size > largestAny {
@@ -267,9 +263,34 @@ func (p *prober) indexSize(idx v1.ImageIndex, depth int) (int64, error) {
 	if matched {
 		return largestMatching, nil
 	}
-	// Nothing matched the configured platform. waybill may still resolve this
-	// reference to some child, so charge the largest one rather than nothing.
+	// Nothing matched the configured platform, so the fallback is load-bearing
+	// and every child had to be measurable for it to mean anything.
+	if fallbackErr != nil {
+		return 0, fallbackErr
+	}
 	return largestAny, nil
+}
+
+// childSize measures one index entry, returning -1 for entries waybill would
+// never pull (attestations and signatures ride along in the index as non-image
+// artifacts).
+func (p *prober) childSize(idx v1.ImageIndex, child v1.Descriptor, depth int) (int64, error) {
+	switch {
+	case child.MediaType.IsIndex():
+		nested, err := idx.ImageIndex(child.Digest)
+		if err != nil {
+			return 0, fmt.Errorf("reading nested index %s: %w", child.Digest, err)
+		}
+		return p.indexSize(nested, depth+1)
+	case child.MediaType.IsImage():
+		img, err := idx.Image(child.Digest)
+		if err != nil {
+			return 0, fmt.Errorf("reading index child %s: %w", child.Digest, err)
+		}
+		return manifestSize(img)
+	default:
+		return -1, nil
+	}
 }
 
 // platformMatches compares an os/arch[/variant] string against an index child.

@@ -270,3 +270,25 @@ func TestApplyAuth(t *testing.T) {
 		require.Error(t, applyAuth(&target, "Bearer sometoken"))
 	})
 }
+
+// TestApplyAuthSchemeIsCaseInsensitive: RFC 9110 makes the auth scheme
+// case-insensitive, and matching it exactly rejected "basic" outright.
+func TestApplyAuthSchemeIsCaseInsensitive(t *testing.T) {
+	for _, scheme := range []string{"Basic", "basic", "BASIC", "BaSiC"} {
+		t.Run(scheme, func(t *testing.T) {
+			var target waybill.ScanTarget
+			header := scheme + " " + base64.StdEncoding.EncodeToString([]byte("robot:secret"))
+			require.NoError(t, applyAuth(&target, header))
+			assert.Equal(t, "robot", target.Username)
+			assert.Equal(t, "secret", target.Password)
+		})
+	}
+
+	// Bearer stays rejected however it is spelled.
+	for _, scheme := range []string{"Bearer", "bearer", "BEARER"} {
+		var target waybill.ScanTarget
+		err := applyAuth(&target, scheme+" token")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bearer authorization is not supported")
+	}
+}
