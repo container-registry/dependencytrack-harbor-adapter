@@ -119,7 +119,10 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		store = memory.NewStore()
 	}
 
-	if err = etc.Check(ctx, config, wrapper, pinger); err != nil {
+	// nil versioner: the exec-ability check the checker would do is exactly the
+	// call just made above, and running waybill --version twice at startup buys
+	// nothing.
+	if err = etc.Check(ctx, config, nil, pinger); err != nil {
 		return fmt.Errorf("checking config: %w", err)
 	}
 	if err = etc.SweepStaleWorkDirs(config.Waybill.WorkDir); err != nil {

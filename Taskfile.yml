@@ -305,7 +305,10 @@ tasks:
 
   dev:up:
     desc: "Local harness: redis + adapter image on one compose network"
-    deps: [build, build:lprobe]
+    # build:waybill is required, not optional: the Dockerfile COPYs the staged
+    # waybill binary out of bin/, so without it the compose build fails on a
+    # clean checkout.
+    deps: [build, build:lprobe, build:waybill]
     cmds:
       - docker compose -f compose.yaml up --build -d
       - cmd: 'echo "adapter + redis are up; logs: docker compose -f compose.yaml logs -f"'
