@@ -56,6 +56,20 @@ type Waybill struct {
 	// registry pull (--insecure-tls-skip-verify). Dev and CI only; prefer
 	// RegistryCACerts in production.
 	InsecureSkipVerify bool `env:"SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY" envDefault:"false"`
+
+	// MaxImageSize rejects an artifact whose compressed layers exceed it, before
+	// the pull starts. 0 disables the check.
+	//
+	// This is a memory guard, not a disk guard. waybill holds layer content in
+	// memory while pulling, so peak RSS runs at roughly 4x the compressed size
+	// and is otherwise unbounded (measured: golang:1.24 at 316 MB compressed
+	// peaks at 1.32 GiB; nvidia/cuda at 3.7 GB is still OOM-killed at 7Gi). An
+	// OOM kills the container rather than the job, so without this cap a single
+	// oversized artifact takes every in-flight scan down with it.
+	//
+	// The default pairs with the 2Gi limit the shipped deployment sets. Raise
+	// both together, keeping roughly limit >= 4 x MaxImageSize x concurrency.
+	MaxImageSize int64 `env:"SCANNER_WAYBILL_MAX_IMAGE_SIZE" envDefault:"536870912"`
 }
 
 type API struct {
@@ -153,11 +167,20 @@ func (c Config) validate() error {
 	if c.Waybill.Timeout <= 0 {
 		return fmt.Errorf("SCANNER_WAYBILL_TIMEOUT must be positive, got %s", c.Waybill.Timeout)
 	}
+	if c.Waybill.MaxImageSize < 0 {
+		return fmt.Errorf("SCANNER_WAYBILL_MAX_IMAGE_SIZE must not be negative, got %d", c.Waybill.MaxImageSize)
+	}
 	switch c.Store.Backend {
 	case StoreBackendRedis, StoreBackendMemory:
 	default:
 		return fmt.Errorf("SCANNER_STORE_BACKEND must be %q or %q, got %q",
 			StoreBackendRedis, StoreBackendMemory, c.Store.Backend)
+	}
+	// Checked before the memory-backend return: the in-process queue starts
+	// exactly WorkerConcurrency consumers, so a value of 0 there produced an
+	// adapter that accepted scans and had nobody to run them.
+	if c.JobQueue.WorkerConcurrency < 1 {
+		return fmt.Errorf("SCANNER_JOB_QUEUE_WORKER_CONCURRENCY must be at least 1, got %d", c.JobQueue.WorkerConcurrency)
 	}
 	if c.Store.Backend == StoreBackendMemory {
 		return nil
@@ -170,9 +193,6 @@ func (c Config) validate() error {
 	}
 	if c.RedisStore.ScanJobTTL <= 0 {
 		return fmt.Errorf("SCANNER_STORE_REDIS_SCAN_JOB_TTL must be positive, got %s", c.RedisStore.ScanJobTTL)
-	}
-	if c.JobQueue.WorkerConcurrency < 1 {
-		return fmt.Errorf("SCANNER_JOB_QUEUE_WORKER_CONCURRENCY must be at least 1, got %d", c.JobQueue.WorkerConcurrency)
 	}
 	return nil
 }

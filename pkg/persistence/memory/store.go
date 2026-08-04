@@ -68,8 +68,12 @@ func (s *store) Finish(_ context.Context, scanJobKey job.ScanJobKey, report json
 	if !ok {
 		return xerrors.Errorf("scan job (%s): %w", key, persistence.ErrJobNotFound)
 	}
+	// Clear Error as well: the Redis store writes the terminal record from
+	// scratch, so leaving a stale error here would make the two backends
+	// disagree on what a finished job looks like.
 	j.Report = report
 	j.Status = job.Finished
+	j.Error = ""
 	s.jobs[key] = j
 	return nil
 }

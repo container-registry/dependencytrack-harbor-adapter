@@ -21,10 +21,24 @@ import (
 // list across an upgrade) is still readable rather than a hard cutover.
 var gzipMagic = []byte{0x1f, 0x8b}
 
+// maxDecodedBytes bounds what one record may expand to. gzip on repetitive JSON
+// reaches ratios in the tens (measured 7.2x on a real alpine envelope, 26.5x on
+// synthetic SPDX), so a small Redis value can expand into a large allocation on
+// every report poll. The SBOM content is derived from a scanned image, which is
+// attacker-influenced, and Redis may be shared. 64 MiB is an order of magnitude
+// above the largest report measured (~5.5 MB for a golang image) and is a bomb
+// guard, not a working limit. Enforced on write too, so an oversized report
+// fails at scan time with a clear cause instead of at poll time.
+const maxDecodedBytes = 64 << 20
+
 func encode(scanJob job.ScanJob) ([]byte, error) {
 	raw, err := json.Marshal(scanJob)
 	if err != nil {
 		return nil, xerrors.Errorf("marshaling scan job: %w", err)
+	}
+	if len(raw) > maxDecodedBytes {
+		return nil, xerrors.Errorf("scan job (%s) is %d bytes, over the %d limit",
+			scanJob.Key.String(), len(raw), maxDecodedBytes)
 	}
 
 	var buf bytes.Buffer
@@ -50,8 +64,13 @@ func decode(stored []byte) (*job.ScanJob, error) {
 			return nil, xerrors.Errorf("decompressing scan job: %w", err)
 		}
 		defer zr.Close()
-		if raw, err = io.ReadAll(zr); err != nil {
+		// Read one byte past the limit so hitting it is distinguishable from a
+		// record that happens to be exactly maxDecodedBytes long.
+		if raw, err = io.ReadAll(io.LimitReader(zr, maxDecodedBytes+1)); err != nil {
 			return nil, xerrors.Errorf("decompressing scan job: %w", err)
+		}
+		if len(raw) > maxDecodedBytes {
+			return nil, xerrors.Errorf("stored scan job expands beyond the %d byte limit", maxDecodedBytes)
 		}
 	}
 

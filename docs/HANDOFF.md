@@ -367,15 +367,14 @@ Blocker/major (address before scaling beyond single-replica demo):
   150-job backlog vs the 100-message buffer). Residual gap: a worker that crashes *mid-scan*
   still loses that job until the TTL — full at-least-once needs `BLMOVE` to a processing
   list plus a reaper. (M3/M4/M5)
-- **No pre-pull image-size cap; per-job workdir is the only bound.** Partially improved: the
-  adapter no longer does an unbounded `crane.Pull` + `crane.Save`, and the second full-size
-  tarball copy is gone — waybill streams into the per-job workdir, which is deleted at job
-  end and swept at startup. But nothing sums manifest layer sizes before the pull, and
-  `/scan` still accepts attacker-influenced registry URLs (SSRF surface). A multi-GB image
-  fills the workdir mount rather than being rejected. Every shipped harness sizes that mount
-  (`size=2G`/`4G` compose tmpfs) and `docs/INTEGRATION.md` states the `emptyDir.sizeLimit`
-  requirement for K8s. Real fix: probe the manifest and reject above a configurable cap.
-  (M1/M2/M4)
+- ~~**No pre-pull image-size cap.**~~ **FIXED** — `pkg/imageprobe` sums manifest layer sizes
+  (one GET, no blobs; largest platform for an index) and `SCANNER_WAYBILL_MAX_IMAGE_SIZE`
+  rejects above the cap before the pull. See the memory item below for the measurements that
+  made this a blocker. **Still open in this area: `/scan` accepts attacker-influenced
+  registry URLs (SSRF surface), and the deployment template sets no egress NetworkPolicy.**
+  The probe widens that surface slightly — it is a second outbound request to the same
+  supplied host — so an egress policy limited to the Harbor registry, Redis and DNS, plus
+  registry-host allowlisting, is the remaining fix. (M1/M2/M4)
 - **No pull-phase deadline distinct from the job deadline.** Less sharp than it was — the
   pull now lives inside the waybill subprocess and shares its `--timeout` plus the job
   deadline — but a stalled pull at concurrency=1 still occupies the worker for the full
@@ -426,11 +425,15 @@ Blocker/major (address before scaling beyond single-replica demo):
   size, because waybill holds layer content in memory during the pull, and nothing bounds
   it. Actions taken: deployment limit raised 1Gi → 2Gi (requests 128Mi → 256Mi);
   `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` deliberately left at 1, since concurrency
-  multiplies the requirement — scale with replicas; sizing rule documented. Still open, and
-  now the top correctness gap: **a pre-pull size cap is mandatory, not a nice-to-have.** No
-  fixed limit survives an arbitrary image, and the kill lands on the container rather than
-  the job, so one oversized image takes every in-flight scan down with it. Probe the
-  manifest, sum the layer sizes, and reject above a configurable cap with a typed error.
+  multiplies the requirement — scale with replicas; sizing rule documented. **FIXED:** `pkg/imageprobe`
+  reads the manifest (one GET, no blobs) and `SCANNER_WAYBILL_MAX_IMAGE_SIZE` (default
+  512 MiB) rejects an oversize artifact before the pull allocates anything, with a typed
+  error naming both sizes and the knob. Verified at a 2Gi limit: the 3.7 GB cuda image
+  returns HTTP 500 with `OOMKilled=false` and the container survives, while golang:1.24
+  still scans. A probe that cannot answer does not block the scan (it uses the same
+  registry and credentials as the pull, so a hard dependency would trade a rare OOM for a
+  common outage); those gaps are counted in `image_probe_failures_total`, which is worth
+  alerting on.
   Also do not back the work dir with tmpfs (RAM-backed, charged to the same limit) — the
   e2e compose overlay does, which is fine for its alpine fixtures only. (M4/M5)
 

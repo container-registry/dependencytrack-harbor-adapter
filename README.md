@@ -67,6 +67,7 @@ All configuration is environment variables. The scanner-facing ones:
 | `SCANNER_WAYBILL_IMAGE_PLATFORM` | — | Override the platform resolved from a multi-arch index |
 | `SCANNER_WAYBILL_OCI_CACHE_SIZE` | `0` | Blob-cache cap in bytes; `0` passes `--no-oci-cache` |
 | `SCANNER_WAYBILL_EXTRA_ARGS` | — | Space-separated extra waybill flags |
+| `SCANNER_WAYBILL_MAX_IMAGE_SIZE` | `536870912` (512 MiB) | Reject artifacts larger than this, before the pull. `0` disables. Memory guard, see below |
 
 Plus `SCANNER_API_SERVER_*` (listener and TLS), `SCANNER_API_AUTH_API_KEY`,
 `SCANNER_STORE_BACKEND` (`redis` or `memory`), `SCANNER_STORE_REDIS_*`,
@@ -89,13 +90,25 @@ default on). Alongside the Go runtime defaults:
 | `harbor_scanner_waybill_enqueued_total` | counter | Jobs accepted |
 | `harbor_scanner_waybill_enqueue_failures_total` | counter | Requests that could not be queued |
 | `harbor_scanner_waybill_report_stored_bytes` | histogram | Stored (compressed) envelope size |
+| `harbor_scanner_waybill_image_compressed_bytes` | histogram | Artifact size as read from its manifest |
+| `harbor_scanner_waybill_image_probe_failures_total` | counter | Size checks that failed; those scans ran unguarded |
 
 `category` is the `waybill.ErrorCategory` of the failure, which is the label that
 separates a broken scanner from a misconfigured registration:
 `RegistryPullAuth` (credentials rejected), `RegistryPullTransport` (TLS or scheme),
 `RegistryPull`, `Timeout`, `WaybillExec`, plus `Adapter` for failures the adapter
-raised itself and `Expired` for a job that waited longer than
-`SCANNER_STORE_REDIS_SCAN_JOB_TTL`.
+raised itself, `Expired` for a job that waited longer than
+`SCANNER_STORE_REDIS_SCAN_JOB_TTL`, and `ImageTooLarge` for one refused by the
+pre-pull size cap.
+
+**Memory is the binding constraint.** waybill holds layer content in memory while
+pulling, so peak RSS runs at roughly 4x the compressed image size and nothing
+else bounds it: a 316 MB image peaks at 1.32 GiB, and a 3.7 GB image is
+OOM-killed even at a 7Gi limit. Because the kill lands on the container, one
+oversized artifact takes every in-flight scan with it. That is what
+`SCANNER_WAYBILL_MAX_IMAGE_SIZE` prevents, and why
+`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` defaults to `1`. Full measurements and the
+sizing rule are in `docs/INTEGRATION.md`.
 
 Worth alerting on: any `category="Expired"` (jobs are aging out of the store
 before a worker reaches them), and a rising `queue_wait_seconds` (the worker pool

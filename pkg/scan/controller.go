@@ -21,6 +21,7 @@ import (
 
 	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/imageprobe"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
@@ -52,6 +53,11 @@ type controller struct {
 	scanner harbor.Scanner
 	workDir string
 	clock   Clock
+
+	// prober and maxImageSize are the pre-pull memory guard. A nil prober or a
+	// non-positive limit disables it.
+	prober       imageprobe.Prober
+	maxImageSize int64
 }
 
 func NewController(store persistence.Store, wrapper waybill.Wrapper, scanner harbor.Scanner, workDir string) Controller {
@@ -61,6 +67,23 @@ func NewController(store persistence.Store, wrapper waybill.Wrapper, scanner har
 		scanner: scanner,
 		workDir: workDir,
 		clock:   systemClock{},
+	}
+}
+
+// NewControllerWithSizeCap is NewController plus the pre-pull memory guard. A
+// nil prober or a non-positive maxImageSize leaves the guard off.
+func NewControllerWithSizeCap(
+	store persistence.Store, wrapper waybill.Wrapper, scanner harbor.Scanner, workDir string,
+	prober imageprobe.Prober, maxImageSize int64,
+) Controller {
+	return &controller{
+		store:        store,
+		wrapper:      wrapper,
+		scanner:      scanner,
+		workDir:      workDir,
+		clock:        systemClock{},
+		prober:       prober,
+		maxImageSize: maxImageSize,
 	}
 }
 
@@ -98,6 +121,45 @@ func (c *controller) Scan(ctx context.Context, scanJobKey job.ScanJobKey, reques
 	return nil
 }
 
+// checkSize rejects an artifact too big to scan within the container's memory
+// limit, before the pull allocates anything.
+//
+// A probe that cannot answer does NOT block the scan. The probe is a safety net
+// reached over the same network and credentials as the pull, so making every
+// scan depend on it would trade a rare OOM for a common outage; the pull that
+// follows will fail on its own if the registry is genuinely unreachable. The
+// gap is counted, because a silently unguarded scanner is the one thing worse
+// than no guard.
+func (c *controller) checkSize(ctx context.Context, target waybill.ScanTarget) error {
+	if c.prober == nil || c.maxImageSize <= 0 {
+		return nil
+	}
+
+	size, err := c.prober.CompressedSize(ctx, imageprobe.Target{
+		Ref:      target.ImageRef,
+		Username: target.Username,
+		Password: target.Password,
+		Insecure: target.Insecure,
+	})
+	if err != nil {
+		metrics.ImageProbeFailuresTotal.Inc()
+		slog.Warn("Pre-pull size check failed; scanning without the memory guard",
+			slog.String("image_ref", target.ImageRef), slog.String("err", err.Error()))
+		return nil
+	}
+
+	metrics.ImageCompressedBytes.Observe(float64(size))
+	if size > c.maxImageSize {
+		return &imageprobe.TooLargeError{Ref: target.ImageRef, Size: size, Limit: c.maxImageSize}
+	}
+
+	slog.Debug("Artifact size accepted",
+		slog.String("image_ref", target.ImageRef),
+		slog.Int64("compressed_bytes", size),
+		slog.Int64("limit", c.maxImageSize))
+	return nil
+}
+
 // errorCategory maps a scan failure onto the metrics category label. Failures
 // raised by the adapter itself (nil request, workdir, store write) carry no
 // waybill.Error; they get their own label rather than being folded into
@@ -112,6 +174,10 @@ func errorCategory(err error) string {
 	}
 	if errors.Is(err, persistence.ErrJobNotFound) {
 		return metrics.CategoryExpired
+	}
+	var tooLarge *imageprobe.TooLargeError
+	if errors.As(err, &tooLarge) {
+		return metrics.CategoryImageTooLarge
 	}
 	return metrics.CategoryAdapter
 }
@@ -138,6 +204,10 @@ func (c *controller) scan(ctx context.Context, scanJobKey job.ScanJobKey, req *h
 
 	target := waybill.ScanTarget{ImageRef: imageRef, Insecure: insecure}
 	if err = applyAuth(&target, req.Registry.Authorization); err != nil {
+		return err
+	}
+
+	if err = c.checkSize(ctx, target); err != nil {
 		return err
 	}
 
@@ -212,7 +282,13 @@ func applyAuth(target *waybill.ScanTarget, authorization string) error {
 		if err != nil {
 			return xerrors.Errorf("decoding basic authorization: %v", err)
 		}
-		username, password, _ := strings.Cut(string(creds), ":")
+		username, password, ok := strings.Cut(string(creds), ":")
+		if !ok {
+			// Without the separator this is not a credential pair. Accepting it
+			// queued a scan that failed later at registry auth, or silently
+			// became an anonymous pull when the payload was empty.
+			return xerrors.Errorf("decoding basic authorization: expected \"username:password\"")
+		}
 		target.Username = username
 		target.Password = password
 		return nil

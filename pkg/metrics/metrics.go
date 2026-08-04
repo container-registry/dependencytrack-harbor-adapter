@@ -26,6 +26,10 @@ const (
 	// raise concurrency, add replicas, or raise the TTL — not a failure of
 	// either the adapter or waybill, so it does not pollute either count.
 	CategoryExpired = "Expired"
+	// CategoryImageTooLarge is an artifact rejected by the pre-pull size cap.
+	// It is a deliberate refusal, not a fault: the alternative is an OOM that
+	// kills the container and every scan running in it.
+	CategoryImageTooLarge = "ImageTooLarge"
 )
 
 // Outcome label values for ScansTotal / ScanDurationSeconds.
@@ -45,9 +49,11 @@ var (
 		Help:      "Scan jobs that reached a terminal state, by outcome and failure category.",
 	}, []string{"outcome", "category"})
 
-	// ScanDurationSeconds buckets reach 1800s because Harbor abandons a report
-	// poll after 30 minutes: anything in the top bucket is work the adapter did
-	// that Harbor will never collect.
+	// ScanDurationSeconds buckets reach 1800s as an operational
+	// long-running-scan threshold, not because anything upstream expires at it.
+	// Harbor keeps polling for a report indefinitely; what actually bounds a job
+	// is SCANNER_STORE_REDIS_SCAN_JOB_TTL, so compare the tail against that.
+	// See the "How long Harbor will actually wait" section in docs/INTEGRATION.md.
 	ScanDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: namespace,
 		Name:      "scan_duration_seconds",
@@ -81,6 +87,25 @@ var (
 		Namespace: namespace,
 		Name:      "enqueue_failures_total",
 		Help:      "Scan requests that could not be queued.",
+	})
+
+	// ImageProbeFailuresTotal counts pre-pull size checks that could not be
+	// performed. The scan proceeds anyway (see scan.controller), so this is the
+	// only signal that the OOM guard is not actually guarding.
+	ImageProbeFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "image_probe_failures_total",
+		Help:      "Pre-pull artifact size checks that failed; the scan ran unguarded.",
+	})
+
+	// ImageCompressedBytes is what the size cap is compared against, recorded
+	// for every artifact the probe could measure. It is the input to sizing
+	// both SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit.
+	ImageCompressedBytes = promauto.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "image_compressed_bytes",
+		Help:      "Compressed size of the artifact as read from its manifest.",
+		Buckets:   prometheus.ExponentialBuckets(1<<20, 4, 8),
 	})
 
 	// ReportBytes is measured on the stored (compressed) envelope, so it tracks

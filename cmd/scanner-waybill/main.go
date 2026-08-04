@@ -21,6 +21,7 @@ import (
 	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
 	v1 "github.com/container-registry/waybill-harbor-adapter/pkg/http/api/v1"
+	"github.com/container-registry/waybill-harbor-adapter/pkg/imageprobe"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
 	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
@@ -125,7 +126,16 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		slog.Warn("Failed to sweep stale work dirs", slog.String("err", err.Error()))
 	}
 
-	controller := scan.NewController(store, wrapper, scanner, config.Waybill.WorkDir)
+	prober, err := imageprobe.New(config.Waybill)
+	if err != nil {
+		return fmt.Errorf("constructing image prober: %w", err)
+	}
+	if config.Waybill.MaxImageSize <= 0 {
+		slog.Warn("Pre-pull artifact size cap is disabled: an oversized image can OOM this container " +
+			"and take every in-flight scan with it. Set SCANNER_WAYBILL_MAX_IMAGE_SIZE.")
+	}
+	controller := scan.NewControllerWithSizeCap(
+		store, wrapper, scanner, config.Waybill.WorkDir, prober, config.Waybill.MaxImageSize)
 
 	// The enqueuer and the worker are always built as a pair. Previously the
 	// worker was conditional while the enqueuer was not, so the memory backend

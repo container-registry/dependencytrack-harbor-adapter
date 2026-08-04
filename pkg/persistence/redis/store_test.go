@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -128,9 +129,22 @@ func TestFinishStoresReportAndStatus(t *testing.T) {
 // dropped: a job whose TTL elapsed during a long scan must not be resurrected as
 // a record Harbor would then poll forever.
 func TestFinishFailsOnExpiredKey(t *testing.T) {
-	_, s, _ := newTestStore(t)
-	err := s.Finish(context.Background(), testKey(), json.RawMessage(`{}`))
+	mr, s, _ := newTestStore(t)
+	key := testKey()
+	// Create it first, then age it out: otherwise the test passes even if TTL
+	// handling and SetXX are both broken, because the key never existed.
+	require.NoError(t, s.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
+	require.NoError(t, s.Finish(context.Background(), key, json.RawMessage(`{"live":true}`)),
+		"sanity: the write must succeed while the key is alive")
+
+	mr.FastForward(2 * time.Hour)
+
+	err := s.Finish(context.Background(), key, json.RawMessage(`{}`))
 	require.ErrorIs(t, err, persistence.ErrJobNotFound)
+
+	got, err := s.Get(context.Background(), key)
+	require.NoError(t, err)
+	assert.Nil(t, got, "an expired job must not be resurrected by the terminal write")
 }
 
 // TestStoredRecordIsCompressed measures the on-the-wire saving rather than
@@ -182,4 +196,38 @@ func TestGetMissingReturnsNil(t *testing.T) {
 	got, err := s.Get(context.Background(), testKey())
 	require.NoError(t, err)
 	assert.Nil(t, got)
+}
+
+// TestDecodeRejectsADecompressionBomb bounds what one record may expand to on a
+// report poll. SBOM content derives from a scanned image, so it is
+// attacker-influenced, and gzip on repetitive JSON reaches ratios in the tens: a
+// small Redis value can otherwise turn into a large allocation on every poll.
+func TestDecodeRejectsADecompressionBomb(t *testing.T) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	// Highly compressible, well past the limit.
+	chunk := bytes.Repeat([]byte("A"), 1<<20)
+	for written := 0; written <= maxDecodedBytes; written += len(chunk) {
+		_, err := zw.Write(chunk)
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	require.Less(t, buf.Len(), 1<<20, "the bomb must be small on the wire, or it is not a bomb")
+
+	_, err := decode(buf.Bytes())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expands beyond")
+}
+
+// TestEncodeRejectsAnOversizeRecord keeps the bound symmetric: without it an
+// oversize report would be written successfully and then be unreadable, failing
+// at poll time instead of at scan time.
+func TestEncodeRejectsAnOversizeRecord(t *testing.T) {
+	_, err := encode(job.ScanJob{
+		Key:    testKey(),
+		Status: job.Finished,
+		Report: json.RawMessage(`"` + strings.Repeat("x", maxDecodedBytes+16) + `"`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "over the")
 }

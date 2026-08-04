@@ -43,7 +43,8 @@ func TestMemoryStoreLifecycle(t *testing.T) {
 
 	// Create is SetNX: does not overwrite.
 	require.NoError(t, s.Create(ctx, job.ScanJob{Key: k, Status: job.Queued}))
-	got, _ = s.Get(ctx, k)
+	got, err = s.Get(ctx, k)
+	require.NoError(t, err)
 	assert.Equal(t, job.Finished, got.Status)
 }
 

@@ -126,12 +126,14 @@ func (e *enqueuer) enqueue(ctx context.Context, j Job, scanJob job.ScanJob) erro
 	logger.Debug("Enqueueing scan job")
 
 	if err := e.store.Create(ctx, scanJob); err != nil {
-		return xerrors.Errorf("creating scan job %v", err)
+		metrics.EnqueueFailuresTotal.Inc()
+		return xerrors.Errorf("creating scan job %w", err)
 	}
 
 	b, err := json.Marshal(j)
 	if err != nil {
-		return xerrors.Errorf("marshaling scan request: %v", err)
+		metrics.EnqueueFailuresTotal.Inc()
+		return xerrors.Errorf("marshaling scan request: %w", err)
 	}
 
 	if err = e.dispatch(ctx, b); err != nil {

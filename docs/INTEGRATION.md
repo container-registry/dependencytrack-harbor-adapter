@@ -125,8 +125,9 @@ the registry pull.
 dir (`SCANNER_WAYBILL_WORK_DIR`), which the adapter deletes when the job ends and
 sweeps at startup. That directory is the bound on a scan's disk use, so give it a
 sized mount: `emptyDir.sizeLimit` in K8s, `tmpfs: - /home/scanner:size=...` in
-compose. There is no pre-pull image-size cap — an oversize image is bounded by the
-mount, not rejected up front.
+compose. Note disk is not the binding constraint — memory is; see "Memory sizing"
+below, and `SCANNER_WAYBILL_MAX_IMAGE_SIZE`, which rejects an oversize artifact up
+front rather than letting it fill the mount.
 
 ## Observing it
 
@@ -202,10 +203,29 @@ memory limit  ≈  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY  ×  4 × (largest expec
 
 1. **`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` stays at `1`.** Raising it multiplies
    the requirement. Scale with replicas, which spread memory across pods.
-2. **No fixed limit is safe against an arbitrary image.** There is no pre-pull
-   size cap, and the kill lands on the container, not on the one scan: at
-   concurrency above 1 or with a long-running pod, one oversized image takes every
-   in-flight scan down with it.
+2. **The pre-pull size cap is what keeps an arbitrary image from OOM-killing the
+   pod.** `SCANNER_WAYBILL_MAX_IMAGE_SIZE` (default 512 MiB, `0` disables)
+   rejects an artifact whose compressed layers exceed it, before the pull
+   allocates anything. Without it the kill lands on the container rather than on
+   the one scan, so one oversized image takes every in-flight scan down with it.
+
+   Verified on the devenv at a 2Gi limit: `nvidia/cuda:12.6.3-devel` (3.7 GB)
+   returns HTTP 500 with `OOMKilled=false` and the container survives, while
+   `golang:1.24` (316 MB) still scans normally.
+
+   ```
+   artifact core:8080/library/x@sha256:... is 3710564885 compressed bytes, over the
+   536870912 limit; scanning it needs roughly 14842259540 bytes of memory
+   (raise SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit together)
+   ```
+
+   The check reads the manifest only, not blobs. For a multi-platform index it
+   uses the largest single platform, since waybill pulls one. A probe that
+   cannot answer does **not** block the scan: it reaches the same registry over
+   the same credentials as the pull, so making every scan depend on it would
+   trade a rare OOM for a common outage. Those gaps are counted in
+   `harbor_scanner_waybill_image_probe_failures_total` — alert on it, because a
+   silently unguarded scanner is worse than no guard.
 
 Also note a `tmpfs` work dir is RAM-backed and charged to the same limit. Use a
 disk-backed `emptyDir`, never `emptyDir.medium: Memory`. Alert on
