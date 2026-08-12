@@ -1,0 +1,62 @@
+---
+name: Setup
+description: Install the Go toolchain (with caching) and Task at the pinned version
+
+inputs:
+  go:
+    description: Install the Go toolchain
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Go
+      if: inputs.go == 'true'
+      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+      with:
+        go-version-file: go.mod
+
+    - name: Install Task
+      shell: bash
+      run: |  # zizmor: ignore[github-env] Adds only this action's checksum-verified Task install directory to PATH.
+        set -euo pipefail
+
+        # Single source of truth for the pin is versions.env
+        version="$(grep '^TASK_VERSION=' versions.env | cut -d= -f2)"
+        version="${version#v}"
+        if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::Could not read a valid TASK_VERSION from versions.env (got '${version}')" >&2
+          exit 1
+        fi
+
+        case "$(uname -s)" in
+          Linux) os="linux" ;;
+          Darwin) os="darwin" ;;
+          *) echo "Unsupported OS for Task: $(uname -s)" >&2; exit 1 ;;
+        esac
+
+        case "$(uname -m)" in
+          x86_64|amd64) arch="amd64" ;;
+          aarch64|arm64) arch="arm64" ;;
+          *) echo "Unsupported architecture for Task: $(uname -m)" >&2; exit 1 ;;
+        esac
+
+        archive="task_${os}_${arch}.tar.gz"
+        tool_dir="${RUNNER_TEMP:-${PWD}/.tools}/task"
+        mkdir -p "${tool_dir}/bin"
+        curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/${archive}" -o "${tool_dir}/${archive}"
+        curl -fsSL "https://github.com/go-task/task/releases/download/v${version}/task_checksums.txt" -o "${tool_dir}/task_checksums.txt"
+        # macOS runners have shasum but not sha256sum
+        if command -v sha256sum >/dev/null 2>&1; then
+          (cd "${tool_dir}" && grep "  ${archive}$" task_checksums.txt | sha256sum -c -)
+        else
+          (cd "${tool_dir}" && grep "  ${archive}$" task_checksums.txt | shasum -a 256 -c -)
+        fi
+        tar -xzf "${tool_dir}/${archive}" -C "${tool_dir}" task
+        install -m 0755 "${tool_dir}/task" "${tool_dir}/bin/task"
+        echo "${tool_dir}/bin" >> "${GITHUB_PATH}"
+
+    - name: Verify Task
+      shell: bash
+      run: task --version

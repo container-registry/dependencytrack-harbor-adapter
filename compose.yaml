@@ -1,0 +1,53 @@
+# Local dev harness: redis + the adapter image on one compose network.
+# Services reach each other by service name over the compose network (the Docker
+# Desktop daemon cannot dial host localhost-mapped ports, so redis is addressed as
+# redis://redis:6379, never via a host port mapping).
+#
+# Build args come from versions.env; export them first (the Taskfile `dev:up` task
+# already loads versions.env via dotenv). Run `task build build:lprobe build:waybill`
+# first: the Dockerfile COPYs those staged binaries out of bin/linux-<arch>/.
+---
+services:
+  redis:
+    image: redis:7-alpine
+    networks: [adapter]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  adapter:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: gcr.io/distroless/cc-debian12:${DISTROLESS_BASE_IMAGE_TAG}@${DISTROLESS_IMAGE_DIGEST}
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SCANNER_LOG_LEVEL: debug
+      SCANNER_REDIS_URL: redis://redis:6379
+    # Runtime hardening mirrors production: nonroot, read-only root FS, writable
+    # work dir via tmpfs at HOME (=/home/scanner).
+    user: "65532:65532"
+    read_only: true
+    # mode=1777 is load-bearing: the daemon's default tmpfs mode otherwise decides
+    # whether uid 65532 can create the work dir (Docker Desktop allows it, the Linux
+    # engine does not). Size caps the RAM-backed work dir.
+    #
+    # This tmpfs is RAM, and waybill's own peak is roughly 4x the compressed image
+    # size on top of it (measured: 1.32 GiB for golang:1.24). Scanning anything
+    # beyond small fixtures here needs several GB free. Production uses a
+    # disk-backed emptyDir instead; see the memory sizing table in
+    # docs/INTEGRATION.md.
+    tmpfs:
+      - /home/scanner:size=2G,mode=1777
+    # Loopback only: the dev adapter has no API key set, and /scan triggers
+    # server-side registry pulls, so it must not listen on every host interface.
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [adapter]
+
+networks:
+  adapter: {}

@@ -1,0 +1,157 @@
+---
+name: Publish Image
+
+on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      version:
+        description: Version to stamp into the binary; derived via git describe when empty
+        required: false
+        type: string
+        default: ""
+      registry_address:
+        required: false
+        type: string
+        default: 8gears.container-registry.com
+      registry_project:
+        required: false
+        type: string
+        default: 8gcr
+    # No secrets: registry auth is keyless via Harbor's Federated Identity
+    # Provider. The job mints a GitHub OIDC token (id-token: write) and Harbor
+    # maps it to a federated robot via a claim rule on the repository claim.
+    outputs:
+      digest:
+        description: Digest of the pushed multi-arch image
+        value: ${{ jobs.build.outputs.digest }}
+
+jobs:
+  build:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Mint the OIDC token Harbor's federated robot login exchanges
+      id-token: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    env:
+      REGISTRY_ADDRESS: ${{ inputs.registry_address }}
+      REGISTRY_PROJECT: ${{ inputs.registry_project }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ inputs.checkout_ref }}
+          # Full history so git describe can derive the version when none is given
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      - name: Resolve version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION}"
+          if [ -z "${version}" ]; then
+            version="$(git describe --tags --always)"
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      # No standalone `task build` here: `task image` below runs build (and
+      # lprobe/waybill staging) itself with the same PLATFORMS/VERSION, and the
+      # Taskfile deliberately disables binary-build caching, so a separate step
+      # compiled everything twice.
+      - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
+
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+
+      - name: Mint OIDC token for Harbor
+        id: harbor-oidc
+        env:
+          AUDIENCE: https://${{ inputs.registry_address }}
+        run: |
+          response=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
+          token=$(jq -r '.value' <<<"${response}")
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ inputs.registry_address }}
+          # Keyless: the username is ignored, the OIDC JWT is the password
+          username: jwt
+          password: ${{ steps.harbor-oidc.outputs.token }}
+
+      - name: Build and push image
+        run: |
+          task image \
+            PUSH=true \
+            PLATFORMS=linux/amd64,linux/arm64 \
+            VERSION="${VERSION}" \
+            IMAGE_TAG="${IMAGE_TAG}" \
+            REGISTRY_ADDRESS="${REGISTRY_ADDRESS}" \
+            REGISTRY_PROJECT="${REGISTRY_PROJECT}"
+
+      - name: Capture image digest
+        id: digest
+        run: |
+          image="${REGISTRY_ADDRESS}/${REGISTRY_PROJECT}/waybill-harbor-adapter:${IMAGE_TAG}"
+          digest=$(docker buildx imagetools inspect "${image}" --format '{{.Manifest.Digest}}')
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Unexpected digest for ${image}: ${digest}"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+  sign:
+    name: Sign Image
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE_REF: ${{ inputs.registry_address }}/${{ inputs.registry_project }}/waybill-harbor-adapter@${{ needs.build.outputs.digest }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+
+      - name: Mint OIDC token for Harbor
+        id: harbor-oidc
+        env:
+          AUDIENCE: https://${{ inputs.registry_address }}
+        run: |
+          response=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
+          token=$(jq -r '.value' <<<"${response}")
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: ${{ inputs.registry_address }}
+          # Keyless: the username is ignored, the OIDC JWT is the password
+          username: jwt
+          password: ${{ steps.harbor-oidc.outputs.token }}
+
+      - name: Sign image by digest
+        run: cosign sign --yes "${IMAGE_REF}"
+
+      - name: Generate SBOM and attest by digest
+        run: |
+          syft "${IMAGE_REF}" -o spdx-json > sbom.spdx.json
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE_REF}"

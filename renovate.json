@@ -1,0 +1,76 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "enabledManagers": [
+    "gomod",
+    "github-actions",
+    "npm",
+    "custom.regex"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "customManagers": [
+    {
+      "description": "versions.env: distroless base image (tag + digest)",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^versions\\.env$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+) versioning=(?<versioning>\\S+)\\s+DISTROLESS_BASE_IMAGE_TAG=(?<currentValue>\\S+)\\s+DISTROLESS_IMAGE_DIGEST=(?<currentDigest>sha256:[a-f0-9]+)"
+      ]
+    },
+    {
+      "description": "Dockerfile: BASE_IMAGE ARG default. Must track DISTROLESS_* in versions.env, or a direct `docker build` silently uses a stale digest-pinned base while `task image` uses the fresh one.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Dockerfile$/"
+      ],
+      "matchStrings": [
+        "ARG BASE_IMAGE=(?<depName>[^:@\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "versions.env: single-value tool and binary pins (including WAYBILL_CLI_VERSION -- do not add a second manager for it, both would extract the same dep)",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^versions\\.env$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>github-releases|go|pypi) depName=(?<depName>\\S+)\\s+[A-Z0-9_]+_VERSION=(?<currentValue>\\S+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "A waybill pin bump is a runtime behavior change; release it as a patch (fix). Matches the github-releases datasource the versions.env custom manager emits -- the pin is a release tarball, not the (private) GHCR package.",
+      "matchDatasources": [
+        "github-releases"
+      ],
+      "matchPackageNames": [
+        "kusari-oss/waybill"
+      ],
+      "semanticCommitType": "fix",
+      "commitMessageTopic": "waybill",
+      "addLabels": [
+        "waybill"
+      ],
+      "prBodyNotes": [
+        "\u26a0\ufe0f `WAYBILL_CLI_SHA256_LINUX_*` in `versions.env` are **not** updated by this PR. Run `task waybill:checksums` and commit the result, or every `task build:waybill` will fail checksum verification."
+      ]
+    },
+    {
+      "description": "Base image / tooling / CI action bumps are chores.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "semanticCommitType": "ci"
+    }
+  ]
+}

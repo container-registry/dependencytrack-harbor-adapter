@@ -1,0 +1,52 @@
+name: Apply Repository Settings
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/settings.yml']
+  schedule:
+    - cron: '0 9 * * 1'  # Weekly Monday 9am UTC - drift check
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: |
+          verify - Apply settings then verify they were applied correctly
+          apply  - Apply settings.yml to GitHub without verification (default)
+          check  - Detect drift: compare settings.yml vs GitHub, fail if different (default on schedule)
+        type: choice
+        options: [verify, apply, check]
+        default: apply
+
+# GITHUB_TOKEN can manage labels but not repository settings (description, etc.).
+# For full access: create a PAT with 'repo' scope, add as the SETTINGS_TOKEN secret.
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  settings:
+    runs-on: ubuntu-latest
+    if: github.repository_owner == github.event.repository.owner.login
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      # `npm ci` from the committed package-lock.json, not an ad-hoc
+      # `npm install <pkg>`: this step runs with a token that can rewrite
+      # repository settings, so the dependency it pulls in is part of that trust
+      # boundary and has to be integrity-pinned. --ignore-scripts because nothing
+      # here needs a package lifecycle hook.
+      - name: Install js-yaml
+        run: npm ci --ignore-scripts
+
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
+        env:
+          # Left empty when not dispatched so apply-settings.js picks its own default:
+          # 'check' on schedule (drift detection), 'verify' on push.
+          INPUT_MODE: ${{ inputs.mode }}
+        with:
+          github-token: ${{ secrets.SETTINGS_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const script = require('./.github/scripts/apply-settings.js')
+            await script({ github, context, core })

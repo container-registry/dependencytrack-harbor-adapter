@@ -1,0 +1,394 @@
+# Build automation for waybill-harbor-adapter
+#
+# CI-aware: local builds target the native arch only, CI builds all platforms.
+# Explicit PLATFORMS=... always wins. Version comes from `git describe`; there is
+# deliberately no VERSION file (tags are the single source of truth after
+# release-please; CI passes the exact release version via VERSION=...).
+#
+# Usage:
+#   task build                                  # native-arch linux binary
+#   task build PLATFORMS=linux/amd64,linux/arm64
+#   task image                                  # CI: multi-arch push, local: native push
+#   task image:local                            # local image for component tests (--load)
+---
+version: '3'
+
+set:
+  - errexit
+  - pipefail
+
+dotenv:
+  - versions.env
+
+vars:
+  BINARY: scanner-waybill
+  IMAGE_NAME: waybill-harbor-adapter
+
+  GIT_COMMIT:
+    sh: git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown"
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  BUILD_DATE:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
+
+  GOPATH_BIN:
+    sh: echo "${GOBIN:-$(go env GOPATH)/bin}"
+  GOBUILD_FLAGS: "-trimpath -buildvcs=false"
+  LDFLAGS: >-
+    -extldflags=-static -s -w
+    -X main.version={{.VERSION}}
+    -X main.commit={{.GIT_COMMIT}}
+    -X main.date={{.BUILD_DATE}}
+
+  # Multi-arch image build configuration.
+  # Registry: 8gears.container-registry.com/8gcr/waybill-harbor-adapter:<tag>
+  REGISTRY_ADDRESS: '{{.REGISTRY_ADDRESS | default "8gears.container-registry.com"}}'
+  REGISTRY_PROJECT: '{{.REGISTRY_PROJECT | default "8gcr"}}'
+  IMAGE_PLATFORMS: '{{.IMAGE_PLATFORMS | default "linux/amd64,linux/arm64"}}'
+  IMAGE_BUILDER: "waybill-adapter-multiarch"
+
+  # Digest-pinned distroless base assembled from versions.env.
+  BASE_IMAGE: 'gcr.io/distroless/cc-debian12:{{.DISTROLESS_BASE_IMAGE_TAG}}@{{.DISTROLESS_IMAGE_DIGEST}}'
+
+  # CI detection: CI builds all platforms, local builds native arch only.
+  IS_CI:
+    sh: '[ -n "${CI:-}${GITHUB_ACTIONS:-}" ] && echo "true" || echo "false"'
+  CI_PLATFORMS: '{{ternary .IMAGE_PLATFORMS (printf "linux/%s" ARCH) (eq .IS_CI "true")}}'
+
+tasks:
+  default:
+    desc: "Build the scanner-waybill binary"
+    cmds:
+      - task: build
+
+  # ============================================================================
+  # Build
+  # ============================================================================
+
+  build:
+    desc: "Build scanner-waybill binaries for PLATFORMS (default: native arch, CI: all)"
+    vars:
+      PLATFORMS: '{{.PLATFORMS | default .CI_PLATFORMS}}'
+    cmds:
+      - for: {var: PLATFORMS, split: ','}
+        task: 'build:binary:{{.ITEM | trim | replace "/" "-"}}'
+      - cmd: 'echo "Binaries:"; find bin -type f -name "{{.BINARY}}" -exec ls -lh {} \;'
+        silent: true
+
+  build:binary:*:
+    desc: "Build binary for one platform, e.g. build:binary:linux-arm64"
+    vars:
+      PLATFORM: '{{index .MATCH 0}}'
+      GOOS: '{{index (splitList "-" (index .MATCH 0)) 0}}'
+      GOARCH: '{{index (splitList "-" (index .MATCH 0)) 1}}'
+    # Deliberately no sources/generates caching: the ldflags embed
+    # VERSION/GIT_COMMIT/BUILD_DATE, which change without any source change.
+    env:
+      GOOS: '{{.GOOS}}'
+      GOARCH: '{{.GOARCH}}'
+      CGO_ENABLED: '0'
+    cmds:
+      - go build {{.GOBUILD_FLAGS}} -ldflags "{{.LDFLAGS}}" -o bin/{{.PLATFORM}}/{{.BINARY}} ./cmd/scanner-waybill
+
+  build:lprobe:
+    desc: "Fetch the pinned lprobe healthcheck binary for PLATFORMS (image dependency)"
+    vars:
+      PLATFORMS: '{{.PLATFORMS | default .CI_PLATFORMS}}'
+    cmds:
+      - for: {var: PLATFORMS, split: ','}
+        task: 'build:lprobe:{{.ITEM | trim | replace "/" "-"}}'
+
+  build:lprobe:*:
+    desc: "Fetch pinned lprobe for one platform, e.g. build:lprobe:linux-arm64"
+    vars:
+      PLATFORM: '{{index .MATCH 0}}'
+      GOARCH: '{{index (splitList "-" (index .MATCH 0)) 1}}'
+    # Fully determined by LPROBE_VERSION: a version stamp makes rebuilds no-ops.
+    status:
+      - test -x bin/{{.PLATFORM}}/lprobe
+      - test "$(cat bin/{{.PLATFORM}}/.lprobe-version 2>/dev/null)" = "{{.LPROBE_VERSION}}"
+    cmds:
+      - cmd: mkdir -p bin/{{.PLATFORM}}
+        silent: true
+      - |
+        arch='{{.GOARCH}}'
+        case "$arch" in
+          amd64) sha='{{.LPROBE_SHA256_LINUX_AMD64}}' ;;
+          arm64) sha='{{.LPROBE_SHA256_LINUX_ARM64}}' ;;
+          *) echo "unsupported lprobe arch: $arch" >&2; exit 1 ;;
+        esac
+        url="https://github.com/fivexl/lprobe/releases/download/{{.LPROBE_VERSION}}/lprobe-linux-${arch}"
+        curl -sSfL "$url" -o bin/{{.PLATFORM}}/lprobe
+        if command -v sha256sum >/dev/null 2>&1; then
+          echo "${sha}  bin/{{.PLATFORM}}/lprobe" | sha256sum -c -
+        else
+          echo "${sha}  bin/{{.PLATFORM}}/lprobe" | shasum -a 256 -c -
+        fi
+        chmod +x bin/{{.PLATFORM}}/lprobe
+      - cmd: echo "{{.LPROBE_VERSION}}" > bin/{{.PLATFORM}}/.lprobe-version
+        silent: true
+
+  build:waybill:
+    desc: "Fetch the pinned waybill CLI for PLATFORMS (image dependency)"
+    vars:
+      PLATFORMS: '{{.PLATFORMS | default .CI_PLATFORMS}}'
+    cmds:
+      - for: {var: PLATFORMS, split: ','}
+        task: 'build:waybill:{{.ITEM | trim | replace "/" "-"}}'
+
+  build:waybill:*:
+    desc: "Fetch pinned waybill for one platform, e.g. build:waybill:linux-arm64"
+    vars:
+      PLATFORM: '{{index .MATCH 0}}'
+      GOARCH: '{{index (splitList "-" (index .MATCH 0)) 1}}'
+    status:
+      - test -x bin/{{.PLATFORM}}/waybill
+      - test "$(cat bin/{{.PLATFORM}}/.waybill-version 2>/dev/null)" = "{{.WAYBILL_CLI_VERSION}}"
+    cmds:
+      - cmd: mkdir -p bin/{{.PLATFORM}}
+        silent: true
+      # Release tarballs are public; the ghcr container package is not (docs/spike-m1.md).
+      # The binary here is byte-identical to the one in the upstream image.
+      - |
+        case '{{.GOARCH}}' in
+          amd64) rust_arch='x86_64';  sha='{{.WAYBILL_CLI_SHA256_LINUX_AMD64}}' ;;
+          arm64) rust_arch='aarch64'; sha='{{.WAYBILL_CLI_SHA256_LINUX_ARM64}}' ;;
+          *) echo "unsupported waybill arch: {{.GOARCH}}" >&2; exit 1 ;;
+        esac
+        stem="waybill-{{.WAYBILL_CLI_VERSION}}-${rust_arch}-unknown-linux-gnu"
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+        url="https://github.com/kusari-oss/waybill/releases/download/{{.WAYBILL_CLI_VERSION}}/${stem}.tar.gz"
+        curl -sSfL "$url" -o "$tmp/waybill.tar.gz"
+        if command -v sha256sum >/dev/null 2>&1; then
+          echo "${sha}  $tmp/waybill.tar.gz" | sha256sum -c -
+        else
+          echo "${sha}  $tmp/waybill.tar.gz" | shasum -a 256 -c -
+        fi
+        tar -xzf "$tmp/waybill.tar.gz" -C "$tmp"
+        install -m 0755 "$tmp/${stem}/waybill" bin/{{.PLATFORM}}/waybill
+        install -m 0644 "$tmp/${stem}/LICENSE" bin/{{.PLATFORM}}/waybill-LICENSE
+      - cmd: echo "{{.WAYBILL_CLI_VERSION}}" > bin/{{.PLATFORM}}/.waybill-version
+        silent: true
+
+  waybill:checksums:
+    desc: "Recompute WAYBILL_CLI_SHA256_* for the pinned WAYBILL_CLI_VERSION"
+    # Renovate bumps WAYBILL_CLI_VERSION but cannot recompute these digests, so
+    # without this every bump PR leaves the pins pointing at the previous release
+    # and every build:waybill fails checksum verification.
+    silent: true
+    cmds:
+      - |
+        set -eu
+        ver='{{.WAYBILL_CLI_VERSION}}'
+        echo "waybill ${ver}" >&2
+        for pair in amd64:x86_64 arm64:aarch64; do
+          goarch="${pair%%:*}"; rust_arch="${pair#*:}"
+          url="https://github.com/kusari-oss/waybill/releases/download/${ver}/waybill-${ver}-${rust_arch}-unknown-linux-gnu.tar.gz"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sum=$(curl -sSfL "$url" | sha256sum | cut -d' ' -f1)
+          else
+            sum=$(curl -sSfL "$url" | shasum -a 256 | cut -d' ' -f1)
+          fi
+          printf 'WAYBILL_CLI_SHA256_LINUX_%s=%s\n' "$(echo "$goarch" | tr '[:lower:]' '[:upper:]')" "$sum"
+        done
+        echo "" >&2
+        echo "Replace the WAYBILL_CLI_SHA256_* lines in versions.env with the above." >&2
+
+  # ============================================================================
+  # Lint & Vulnerability Checks
+  # ============================================================================
+
+  lint:
+    desc: "Lint Go code with golangci-lint in Docker"
+    cmd: >-
+      docker run --rm
+      -v {{.ROOT_DIR}}:/src -w /src
+      golangci/golangci-lint:{{.GOLANGCILINT_VERSION}}-alpine
+      golangci-lint run --timeout=10m
+
+  _require-golangci-lint:
+    internal: true
+    run: once
+    status:
+      - test -x {{.GOPATH_BIN}}/golangci-lint
+      - |
+        version='{{.GOLANGCILINT_VERSION}}'
+        {{.GOPATH_BIN}}/golangci-lint version | grep -Eq "version v?${version#v}"
+    cmd: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{.GOLANGCILINT_VERSION}}
+
+  lint:local:
+    desc: "Lint Go code with pinned local golangci-lint (used by CI)"
+    deps: [_require-golangci-lint]
+    cmd: '{{.GOPATH_BIN}}/golangci-lint run --timeout=10m'
+
+  lint:yaml:
+    desc: "Lint YAML files with yamllint (.yamllint config)"
+    cmds:
+      - |
+        if command -v yamllint >/dev/null 2>&1; then
+          yamllint .
+        else
+          pipx run yamllint=={{.YAMLLINT_VERSION}} .
+        fi
+
+  vuln-check:
+    desc: "Scan Go dependencies for known vulnerabilities"
+    cmd: go run golang.org/x/vuln/cmd/govulncheck@{{.GOVULNCHECK_VERSION}} ./...
+
+  # ============================================================================
+  # Tests
+  # ============================================================================
+
+  test:
+    desc: "Run unit tests with race detection and coverage"
+    env:
+      # -race requires cgo; some CI runner images export CGO_ENABLED=0.
+      CGO_ENABLED: "1"
+    cmd: go test -short -race -coverprofile=coverage.txt -covermode=atomic ./...
+
+  test:component:
+    desc: "Run component tests against the locally built image (requires Docker)"
+    deps: [image:local]
+    env:
+      TEST_ADAPTER_IMAGE: '{{.IMAGE_NAME}}:{{.VERSION}}'
+    cmd: go test -count=1 -tags=component ./test/component/...
+
+  test:e2e:devenv:
+    desc: "Run e2e tests against a running Harbor devenv (build tag: e2e; run locally)"
+    cmd: go test -count=1 -tags=e2e ./test/e2e/devenv/...
+
+  # ============================================================================
+  # Container Image
+  # ============================================================================
+
+  image:
+    desc: "Build container image (PUSH=false to --load locally, PLATFORMS=... to override)"
+    vars:
+      PUSH: '{{.PUSH | default "true"}}'
+      PLATFORMS: '{{.PLATFORMS | default (ternary (printf "linux/%s" ARCH) .CI_PLATFORMS (eq .PUSH "false"))}}'
+      IMAGE_TAG: '{{.IMAGE_TAG | default .VERSION}}'
+      OUTPUT: '{{ternary "--push" "--load" (eq .PUSH "true")}}'
+      TAG_PREFIX: '{{ternary (printf "%s/%s/" .REGISTRY_ADDRESS .REGISTRY_PROJECT) "" (eq .PUSH "true")}}'
+      FULL_TAG: '{{.TAG_PREFIX}}{{.IMAGE_NAME}}:{{.IMAGE_TAG}}'
+      # Multi-arch push uses the docker-container builder; local --load uses the
+      # default docker driver.
+      BUILDER_FLAG: '{{if eq .PUSH "true"}}--builder {{.IMAGE_BUILDER}}{{end}}'
+    preconditions:
+      - sh: '{{if and (ne .PUSH "true") (contains "," .PLATFORMS)}}exit 1{{end}}'
+        msg: "PUSH=false requires a single platform (--load limitation)"
+    cmds:
+      - task: build
+        vars: {PLATFORMS: '{{.PLATFORMS}}'}
+      - task: build:lprobe
+        vars: {PLATFORMS: '{{.PLATFORMS}}'}
+      - task: build:waybill
+        vars: {PLATFORMS: '{{.PLATFORMS}}'}
+      - '{{if eq .PUSH "true"}}docker buildx inspect {{.IMAGE_BUILDER}} >/dev/null 2>&1 || docker buildx create --name {{.IMAGE_BUILDER}} --driver docker-container --bootstrap{{else}}true{{end}}'
+      - >-
+        docker buildx build
+        {{.BUILDER_FLAG}}
+        --platform {{.PLATFORMS}}
+        --build-arg BASE_IMAGE={{.BASE_IMAGE}}
+        -t {{.FULL_TAG}}
+        {{.OUTPUT}}
+        .
+
+  image:local:
+    desc: "Build local image {{.IMAGE_NAME}}:<version> for component tests (native arch)"
+    cmds:
+      - task: image
+        vars: {PUSH: "false"}
+
+  # ============================================================================
+  # Development
+  # ============================================================================
+
+  run:
+    desc: "Run the adapter locally with debug logging (requires redis + waybill on PATH)"
+    vars:
+      RUN_TMP:
+        sh: echo "${TMPDIR:-/tmp/}"
+      # SCANNER_WAYBILL_BINARY defaults to the absolute /usr/local/bin/waybill the
+      # image ships, so a waybill merely on PATH would not be found. Resolve it
+      # here. `task build:waybill` is deliberately not used: it stages a
+      # linux-<arch> binary for the image, which will not exec on a macOS host.
+      WAYBILL_BIN:
+        sh: command -v waybill || true
+    preconditions:
+      - sh: '[ -n "{{.WAYBILL_BIN}}" ]'
+        msg: "waybill not found on PATH. Install it from https://github.com/kusari-oss/waybill/releases (WAYBILL_CLI_VERSION in versions.env is the pin), or pass the path via `task run WAYBILL_BIN=/path/to/waybill`."
+    env:
+      SCANNER_LOG_LEVEL: debug
+      SCANNER_REDIS_URL: redis://localhost:6379
+      SCANNER_WAYBILL_BINARY: '{{.WAYBILL_BIN}}'
+      SCANNER_WAYBILL_WORK_DIR: '{{.RUN_TMP}}waybill-harbor-adapter/work'
+    cmds:
+      - mkdir -p "$SCANNER_WAYBILL_WORK_DIR"
+      - go run ./cmd/scanner-waybill
+
+  dev:up:
+    desc: "Local harness: redis + adapter image on one compose network"
+    # build:waybill is required, not optional: the Dockerfile COPYs the staged
+    # waybill binary out of bin/, so without it the compose build fails on a
+    # clean checkout.
+    deps: [build, build:lprobe, build:waybill]
+    cmds:
+      - docker compose -f compose.yaml up --build -d
+      - cmd: 'echo "adapter + redis are up; logs: docker compose -f compose.yaml logs -f"'
+        silent: true
+
+  dev:down:
+    desc: "Tear down the local harness and its volumes"
+    cmds:
+      - docker compose -f compose.yaml down -v
+
+  setup:
+    desc: "Install pinned development tools and git hooks"
+    cmds:
+      - task: _require-golangci-lint
+      - go install golang.org/x/vuln/cmd/govulncheck@{{.GOVULNCHECK_VERSION}}
+      - cmd: |
+          if [ -f lefthook.yml ]; then
+            if command -v lefthook >/dev/null 2>&1; then
+              lefthook install
+            else
+              echo "lefthook not installed; install it (e.g. 'brew install lefthook') and run 'lefthook install'"
+            fi
+          fi
+        silent: true
+
+  clean:
+    desc: "Remove build artifacts and coverage output"
+    cmds:
+      - rm -rf bin/ dist/ coverage.txt
+
+  info:
+    desc: "Print version, tool pins, and build configuration"
+    silent: true
+    cmds:
+      - |
+        echo ""
+        echo "waybill-harbor-adapter build information"
+        echo ""
+        echo "Build metadata:"
+        echo "  Version:        {{.VERSION}}"
+        echo "  Git commit:     {{.GIT_COMMIT}}"
+        echo "  Build date:     {{.BUILD_DATE}}"
+        echo "  Go build flags: {{.GOBUILD_FLAGS}}"
+        echo "  Output:         bin/<os>-<arch>/{{.BINARY}}"
+        echo ""
+        echo "Image configuration:"
+        echo "  Image:          {{.REGISTRY_ADDRESS}}/{{.REGISTRY_PROJECT}}/{{.IMAGE_NAME}}"
+        echo "  Platforms:      {{.CI_PLATFORMS}} (CI: {{.IMAGE_PLATFORMS}})"
+        echo "  Base image:     {{.BASE_IMAGE}}"
+        echo ""
+        echo "Pins (versions.env):"
+        echo "  waybill CLI:    {{.WAYBILL_CLI_VERSION}} (release tarball)"
+        echo "  lprobe:         {{.LPROBE_VERSION}}"
+        echo "  golangci-lint:  {{.GOLANGCILINT_VERSION}}"
+        echo "  govulncheck:    {{.GOVULNCHECK_VERSION}}"
+        echo "  Task (CI):      {{.TASK_VERSION}}"
+        echo "  typos:          {{.TYPOS_VERSION}}"
+        echo "  yamllint:       {{.YAMLLINT_VERSION}}"
+        echo ""

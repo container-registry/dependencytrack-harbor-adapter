@@ -1,4 +1,21 @@
+.idea/
+.vscode/
+
+# Build artifacts
 bin/
 dist/
 coverage.txt
+# Stray root-level binary from an ad-hoc `go build ./cmd/scanner-waybill`
+# (the Taskfile always builds into bin/).
+/scanner-waybill
+
+# Task fingerprint cache
 .task/
+
+# Directory Cache Files
+.DS_Store
+thumbs.db
+
+# npm artifacts from the settings workflow's `npm ci` (package.json and
+# package-lock.json ARE committed; the installed tree is not).
+/node_modules/

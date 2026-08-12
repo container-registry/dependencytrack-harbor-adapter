@@ -1,0 +1,72 @@
+# Component-tier harness: registry:2 (htpasswd, plain HTTP) + redis + the REAL
+# adapter image built by `task image:local`. No Harbor: the Go test harness
+# (component_test.go) plays Harbor's client.
+#
+# Topology respects two Docker Desktop constraints:
+#   1. Containers cannot dial host localhost-mapped ports, so services reach each
+#      other by compose service name (adapter -> registry:5000, adapter -> redis:6379).
+#   2. `internal: true` networks break host->published-port ingress on Docker
+#      Desktop, so the harness cannot use a fully-isolated network AND be host-driven.
+#      Egress is therefore blackholed at the enrichment endpoints (extra_hosts ->
+#      RFC5737 TEST-NET-1 192.0.2.1, an unroutable address a connect() hangs on,
+#      simulating the production NetworkPolicy drop). A scan still completes because
+#      the wrapper passes --offline; if --offline regressed, waybill would try
+#      api.deps.dev / api.clearlydefined.io, hit the blackhole, and stall.
+---
+services:
+  registry:
+    image: registry:2
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm"
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+      # Plain HTTP (no TLS): exercises the adapter's insecure/http pull path.
+    volumes:
+      - ./htpasswd:/auth/htpasswd:ro
+    ports:
+      - "${COMPONENT_REGISTRY_PORT:-5099}:5000"
+    networks: [comp]
+
+  redis:
+    image: redis:7-alpine
+    networks: [comp]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  adapter:
+    image: ${TEST_ADAPTER_IMAGE:?set TEST_ADAPTER_IMAGE (task test:component does this)}
+    depends_on:
+      redis:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    environment:
+      SCANNER_LOG_LEVEL: debug
+      SCANNER_REDIS_URL: redis://redis:6379
+      # Bounded scan timeout keeps the failure/latency assertions fast and derives a
+      # short worker/lock deadline (LockTTL = timeout + 30s).
+      SCANNER_WAYBILL_TIMEOUT: 90s
+    # Egress blackhole: waybill's three enrichment sources both live on these two
+    # hosts (api.deps.dev, api.clearlydefined.io). 192.0.2.1 is RFC5737 unroutable.
+    extra_hosts:
+      - "api.deps.dev:192.0.2.1"
+      - "api.clearlydefined.io:192.0.2.1"
+    # Runtime hardening mirrors production: nonroot uid, read-only root FS, writable
+    # per-job work dir via tmpfs at HOME (=/home/scanner).
+    user: "65532:65532"
+    read_only: true
+    # mode=1777 is required, not cosmetic: without it the daemon's default tmpfs mode
+    # decides whether uid 65532 may mkdir the work dir. Docker Desktop's VM happens to
+    # give 1777; the Linux engine on CI runners does not, and the adapter dies with
+    # "work dir not usable ... permission denied". Size caps the RAM-backed work dir.
+    tmpfs:
+      - /home/scanner:size=2G,mode=1777
+    ports:
+      - "${COMPONENT_ADAPTER_PORT:-8099}:8080"
+    networks: [comp]
+
+networks:
+  comp: {}

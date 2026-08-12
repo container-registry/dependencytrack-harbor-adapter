@@ -1,0 +1,110 @@
+# CI gates for pull requests and pushes to main, plus a weekly vuln-check sweep.
+#
+# The component job builds the REAL adapter image (which bundles the real waybill
+# binary) and runs `task test:component` against it. waybill is fetched from its
+# public, checksum-verified release tarball, so no registry credentials are needed.
+---
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+  schedule:
+    # Weekly vulnerability sweep of main (only the vuln-check job runs).
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+# The event name is part of the group so the weekly scheduled run cannot
+# cancel an in-flight push run on main (or vice versa).
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Binaries
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Cross-compile all release platforms
+        run: task build PLATFORMS=linux/amd64,linux/arm64
+
+  test-unit:
+    name: Unit Tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run unit tests
+        run: task test
+
+  test-component:
+    name: Component Tests
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      # No registry login: `task build:waybill` fetches the waybill CLI from its
+      # public, checksum-verified release tarball (versions.env).
+      - name: Run component tests against the real adapter image
+        run: task test:component
+
+  lint-go:
+    name: Go Lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run Go lint
+        run: task lint:local
+
+  lint-yaml:
+    name: YAML Lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          go: "false"
+      - name: Run YAML lint
+        run: task lint:yaml
+
+  vuln-check:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run govulncheck
+        run: task vuln-check

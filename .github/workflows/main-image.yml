@@ -1,0 +1,58 @@
+---
+name: Main Image
+
+# The workflow_dispatch trigger doubles as the pre-release WIF smoke test: it
+# exercises the full OIDC -> federated-robot login -> multi-arch push path before
+# the first tagged release exists.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-image-${{ github.ref }}
+  # Never cancel a publish. publish-image.yml pushes and signs in separate jobs,
+  # so cancelling between them leaves consumers pulling an unsigned `latest`.
+  cancel-in-progress: false
+
+jobs:
+  # `latest` is the advertised image; publishing it must not race a red CI run
+  # on the same commit. The CI workflow runs independently, so this job re-runs
+  # the same test gate as a hard prerequisite of the publish.
+  verify:
+    name: Test Before Publish
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Run unit tests
+        run: task test
+
+  publish-image:
+    name: Publish Latest Image
+    needs: [verify]
+    # workflow_dispatch accepts any ref, and this job publishes the mutable
+    # `latest` tag from it. Without this guard an unmerged branch could be
+    # dispatched straight to the tag every consumer follows. Dispatching from
+    # main still works, which is all the WIF smoke test needs.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      checkout_ref: ${{ github.sha }}
+      image_tag: latest
+      # version omitted: publish-image derives it via git describe
+      registry_address: ${{ vars.REGISTRY_ADDRESS || '8gears.container-registry.com' }}
+      registry_project: ${{ vars.REGISTRY_PROJECT || '8gcr' }}

@@ -1,0 +1,20 @@
+waybill-harbor-adapter
+Copyright 2026 The waybill-harbor-adapter authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Bundled third-party software
+--------------------------------------------------------------------------------
+
+This product's container image bundles the waybill SBOM CLI binary, redistributed
+unmodified from the upstream release tarball (checksum-verified at build time
+against the release's own SHA256SUMS; see versions.env and Taskfile.yml).
+
+  waybill
+  Copyright (c) The Kusari contributors
+  Licensed under the Apache License, Version 2.0
+  https://github.com/kusari-oss/waybill
+
+A copy of the waybill license is shipped inside the container image at
+/licenses/waybill-LICENSE, as required by the Apache-2.0 redistribution terms.

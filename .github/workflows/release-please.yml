@@ -1,0 +1,104 @@
+---
+name: Release Please
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish-image:
+    name: Publish Release Image
+    needs: [release-please]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      checkout_ref: ${{ needs.release-please.outputs.tag_name }}
+      image_tag: ${{ needs.release-please.outputs.tag_name }}
+      version: ${{ needs.release-please.outputs.version }}
+      registry_address: ${{ vars.REGISTRY_ADDRESS || '8gears.container-registry.com' }}
+      registry_project: ${{ vars.REGISTRY_PROJECT || '8gcr' }}
+
+  update-release-notes:
+    name: Update Release Notes
+    # Wiring fix vs donor: only depend on jobs that exist here. The donor also
+    # `needs` publish-helm-chart and publish-binaries (dropped: no chart, no binary
+    # assets in v1). A `needs` on a non-existent job makes the whole workflow
+    # invalid, and a needed job that is skipped would skip this one; both jobs
+    # below share the same release_created gate, so they run or skip together.
+    needs: [release-please, publish-image]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      REGISTRY_ADDRESS: ${{ vars.REGISTRY_ADDRESS || '8gears.container-registry.com' }}
+      REGISTRY_PROJECT: ${{ vars.REGISTRY_PROJECT || '8gcr' }}
+      TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+      IMAGE_DIGEST: ${{ needs.publish-image.outputs.digest }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Append artifact details to release notes
+        run: |
+          REGISTRY="${REGISTRY_ADDRESS}/${REGISTRY_PROJECT}"
+
+          # Idempotency: a re-run must not stack another artifact section
+          if gh release view "${TAG_NAME}" --json body -q .body | grep -q "^## Container Image$"; then
+            echo "Release notes already contain the artifact section; skipping."
+            exit 0
+          fi
+
+          {
+            gh release view "${TAG_NAME}" --json body -q .body
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Container Image"
+            echo ""
+            echo "Multi-arch image (\`linux/amd64\`, \`linux/arm64\`) signed with [cosign](https://github.com/sigstore/cosign)."
+            echo ""
+            echo "| Image | Reference |"
+            echo "|-------|-----------|"
+            echo "| \`waybill-harbor-adapter\` | \`${REGISTRY}/waybill-harbor-adapter:${TAG_NAME}\` |"
+            echo ""
+            echo "**Verify the image signature:**"
+            echo "\`\`\`sh"
+            echo "cosign verify \\"
+            echo "  --certificate-identity \"https://github.com/${GH_REPO}/.github/workflows/publish-image.yml@refs/heads/main\" \\"
+            echo "  --certificate-oidc-issuer \"https://token.actions.githubusercontent.com\" \\"
+            echo "  ${REGISTRY}/waybill-harbor-adapter@${IMAGE_DIGEST}"
+            echo "\`\`\`"
+            echo ""
+            echo "**Verify the SBOM attestation:**"
+            echo "\`\`\`sh"
+            echo "cosign verify-attestation \\"
+            echo "  --certificate-identity \"https://github.com/${GH_REPO}/.github/workflows/publish-image.yml@refs/heads/main\" \\"
+            echo "  --certificate-oidc-issuer \"https://token.actions.githubusercontent.com\" \\"
+            echo "  --type spdxjson \\"
+            echo "  ${REGISTRY}/waybill-harbor-adapter@${IMAGE_DIGEST}"
+            echo "\`\`\`"
+          } | gh release edit "${TAG_NAME}" --notes-file -
