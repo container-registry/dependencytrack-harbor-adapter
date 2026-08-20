@@ -1,16 +1,16 @@
-# Observed Harbor behavior with the waybill SBOM-only scanner
+# Observed Harbor behavior with the syft SBOM-only scanner
 
 Recorded during the M7 devenv e2e (`test/devenv/run-e2e.sh`) against a live Harbor
 `8gcr-main` devenv (core/jobservice/registryctl built from source, `SKIP_TRIVY`,
 adapter joined to `harbor-0_default`). Every claim below is from a real API call or
 core/jobservice log line captured during the run, not from documentation. Harbor
 core version: the `8gcr-main` fork at the checked-out HEAD; adapter image
-`waybill-harbor-adapter`. The original run used waybill `0.1.0-alpha.55` under
+`dependencytrack-harbor-adapter`. The original run used syft `0.1.0-alpha.55` under
 the D-1 self-pull; the e2e has since been re-run green with the current
-`v0.1.0-alpha.69` pin and waybill's native remote pull (docs/PR-BODY.md), and
+`v0.1.0-alpha.69` pin and syft's native remote pull (docs/PR-BODY.md), and
 the Harbor-side behavior recorded here was unchanged.
 
-Fixtures (project `library`, repo `waybill-e2e`):
+Fixtures (project `library`, repo `syft-e2e`):
 - `:single` — the linux/amd64 child manifest of `alpine:3.20`
   (`sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e`,
   mediaType `application/vnd.oci.image.manifest.v1+json`), pushed by digest.
@@ -75,7 +75,7 @@ is **absent** (not `false`) in `GET /api/v2.0/scanners/{uuid}` (confirmed:
 
 ### 2a. Explicit vulnerability trigger → HTTP 500
 
-With the project bound to waybill:
+With the project bound to syft:
 
 ```
 POST .../artifacts/<amd64-child>/scan  {"scan_type":"vulnerability"}   -> HTTP 500
@@ -86,7 +86,7 @@ Body: `{"errors":[{"code":"UNKNOWN","message":"internal server error"}]}`. Core 
 
 ```
 [ERROR] /lib/http/error.go:58: {"errors":[{"code":"UNKNOWN",
-  "message":"unknown: scan artifact library/waybill-e2e@sha256:c64c687... failed"}]}
+  "message":"unknown: scan artifact library/syft-e2e@sha256:c64c687... failed"}]}
 ```
 
 The bound scanner produces no vulnerability-report MIME type, so the vulnerability
@@ -113,16 +113,16 @@ than failing the push (`base_controller.go:264-268`: `if opts.FromEvent { return
 ### 2c. Scan All (system, manual) → no vuln reports for sbom-bound artifacts, no global error
 
 `POST /api/v2.0/system/scanAll/schedule {"schedule":{"type":"Manual"}}` → `201`. After
-it ran, the waybill-bound artifact still had `scan_overview: null` (no vulnerability
+it ran, the syft-bound artifact still had `scan_overview: null` (no vulnerability
 report) and its `sbom.harbor` accessory intact. Scan All issues **vulnerability**
-scans; for artifacts whose project scanner is waybill these produce no report and do
+scans; for artifacts whose project scanner is syft these produce no report and do
 not error the Scan All run.
 
 ## Takeaways for deployment
 
-- Register waybill as an **additional, non-default** scanner and bind it per project
+- Register syft as an **additional, non-default** scanner and bind it per project
   (or run auto_sbom_generation), so the system default vulnerability scanner (Trivy on
-  demo) still serves vulnerability scans. If waybill becomes a project's scanner,
+  demo) still serves vulnerability scans. If syft becomes a project's scanner,
   every vulnerability path for that project degrades: explicit triggers 500, auto/Scan
   All silently produce no vulnerability data. This is the documented "sbom-only
   footgun".

@@ -8,8 +8,8 @@ import (
 
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
 )
 
 // The record is stored gzipped because it is almost entirely the SPDX document,

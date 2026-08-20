@@ -12,12 +12,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
-	predis "github.com/container-registry/waybill-harbor-adapter/pkg/persistence/redis"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence"
+	predis "github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence/redis"
 )
 
 // expiredJobController builds a controller over a Redis store whose only record
@@ -35,7 +35,7 @@ func expiredJobController(t *testing.T) (*fakeWrapper, Controller, job.ScanJobKe
 	mr.FastForward(2 * time.Hour)
 
 	w := &fakeWrapper{sbom: json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)}
-	return w, NewController(s, w, harbor.Scanner{}, t.TempDir()), key
+	return w, NewController(s, w, harbor.Scanner{}, t.TempDir(), Options{}), key
 }
 
 func expiredScanRequest() *harbor.ScanRequest {

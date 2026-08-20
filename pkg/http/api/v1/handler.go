@@ -1,5 +1,6 @@
-// Package v1 implements the Harbor Scanner Adapter API v1 for the waybill
-// (SBOM-only) adapter: /metadata, /scan, /scan/{id}/report, probes and metrics.
+// Package v1 implements the Harbor Scanner Adapter API v1 for the
+// Dependency-Track (SBOM-only) adapter: /metadata, /scan, /scan/{id}/report,
+// probes and metrics.
 package v1
 
 import (
@@ -16,12 +17,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/samber/lo"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/queue"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/queue"
 )
 
 const (
@@ -35,13 +36,10 @@ const (
 	// ParseInt(v,10,8), so it MUST be <= 127 (plan m4). 5 seconds.
 	refreshAfter = "5"
 
-	// The repository as it exists today. The rename to waybill-harbor-adapter is
-	// pending; GitHub will redirect this URL once it lands, so the value Harbor
-	// surfaces resolves either way.
-	vcsURL = "https://github.com/container-registry/mikebom-harbor-adapter"
+	vcsURL = "https://github.com/container-registry/dependencytrack-harbor-adapter"
 )
 
-// ReadyFunc reports readiness (Redis reachable, waybill exec-able). 503 on error.
+// ReadyFunc reports readiness (Redis reachable). 503 on error.
 type ReadyFunc func(ctx context.Context) error
 
 type requestHandler struct {
@@ -293,8 +291,13 @@ func (h *requestHandler) GetMetadata(res http.ResponseWriter, _ *http.Request) {
 		"org.label-schema.vcs-ref":    h.info.Commit,
 		"org.label-schema.vcs":        vcsURL,
 
-		"env.SCANNER_WAYBILL_TIMEOUT":    h.config.Waybill.Timeout.String(),
-		"env.SCANNER_WAYBILL_ENRICHMENT": fmt.Sprintf("%t", h.config.Waybill.Enrichment),
+		"env.SCANNER_SYFT_TIMEOUT": h.config.Syft.Timeout.String(),
+		// Surfaced in Harbor's scanner detail view so an operator can see
+		// whether this adapter is actually wired to a Dependency-Track instance
+		// without reading the deployment. The URL is not a secret; the API key
+		// is, and is never reported.
+		"env.SCANNER_DTRACK_ENABLED": fmt.Sprintf("%t", h.config.DTrack.URL != ""),
+		"env.SCANNER_DTRACK_URL":     h.config.DTrack.URL,
 	}
 
 	metadata := &harbor.ScannerAdapterMetadata{

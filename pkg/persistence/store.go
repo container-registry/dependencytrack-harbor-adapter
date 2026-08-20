@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
 )
 
 // ErrJobNotFound is returned when a write targets a record that is not there.

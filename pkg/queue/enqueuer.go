@@ -20,12 +20,12 @@ import (
 	"github.com/samber/lo"
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence"
 )
 
 const scanArtifactJobName = "scan_artifact"

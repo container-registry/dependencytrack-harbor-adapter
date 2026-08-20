@@ -10,9 +10,9 @@ import (
 	redis "github.com/redis/go-redis/v9"
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence"
 )
 
 type store struct {

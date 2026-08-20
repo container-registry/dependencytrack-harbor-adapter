@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Versioner is satisfied by the waybill wrapper; the checker uses it to prove the
+// Versioner is satisfied by the syft wrapper; the checker uses it to prove the
 // binary is exec-able at startup.
 type Versioner interface {
 	Version(ctx context.Context) (string, error)
@@ -23,9 +23,10 @@ type Pinger interface {
 }
 
 // Check fails fast on an unusable environment: work dir must be writable, the
-// waybill binary must be exec-able (captures its version once), and Redis must be
-// reachable when the store backend is redis.
-func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinger) error {
+// syft binary must be exec-able (captures its version once), Dependency-Track
+// must accept the API key, and Redis must be reachable when the store backend is
+// redis.
+func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinger, dtrack Pinger) error {
 	slog.Debug("Current process", slog.Int("pid", os.Getpid()))
 	slog.Debug("Current user",
 		slog.Int("uid", os.Getuid()),
@@ -33,32 +34,47 @@ func Check(ctx context.Context, config Config, versioner Versioner, pinger Pinge
 		slog.String("home_dir", os.Getenv("HOME")),
 	)
 
-	if config.Waybill.WorkDir == "" {
-		return fmt.Errorf("waybill work dir must not be blank")
+	if config.Syft.WorkDir == "" {
+		return fmt.Errorf("syft work dir must not be blank")
 	}
-	if err := ensureDirWritable(config.Waybill.WorkDir); err != nil {
+	if err := ensureDirWritable(config.Syft.WorkDir); err != nil {
 		return fmt.Errorf("work dir not usable: %w", err)
 	}
 
-	// waybill itself fails fast on an unreadable --registry-ca-cert, but only once
-	// a scan is already in flight: the failure would surface as a failed Harbor
-	// scan rather than as a broken deployment. Check the paths at startup instead.
-	for _, path := range config.Waybill.RegistryCACerts {
-		if err := checkCertBundle(path); err != nil {
-			return fmt.Errorf("registry CA certificate %s: %w", path, err)
+	// syft fails on an unreadable CA bundle only once a scan is in flight, where
+	// it surfaces as a failed Harbor scan rather than as a broken deployment.
+	// Check the path at startup instead.
+	if config.Syft.RegistryCACert != "" {
+		if err := checkCertBundle(config.Syft.RegistryCACert); err != nil {
+			return fmt.Errorf("registry CA certificate %s: %w", config.Syft.RegistryCACert, err)
 		}
 	}
-	if config.Waybill.InsecureSkipVerify {
-		slog.Warn("TLS verification is DISABLED for registry pulls (SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY); " +
-			"use SCANNER_WAYBILL_REGISTRY_CA_CERTS in production")
+	if config.Syft.InsecureSkipVerify {
+		slog.Warn("TLS verification is DISABLED for registry pulls (SCANNER_SYFT_INSECURE_TLS_SKIP_VERIFY); " +
+			"use SCANNER_SYFT_REGISTRY_CA_CERT in production")
+	}
+	if config.DTrack.InsecureSkipVerify {
+		slog.Warn("TLS verification is DISABLED for Dependency-Track (SCANNER_DTRACK_INSECURE_TLS_SKIP_VERIFY)")
 	}
 
 	if versioner != nil {
 		version, err := versioner.Version(ctx)
 		if err != nil {
-			return fmt.Errorf("waybill binary not exec-able (%s): %w", config.Waybill.Binary, err)
+			return fmt.Errorf("syft binary not exec-able (%s): %w", config.Syft.Binary, err)
 		}
-		slog.Info("waybill binary is exec-able", slog.String("version", version))
+		slog.Info("syft binary is exec-able", slog.String("version", version))
+	}
+
+	// An unreachable Dependency-Track or a key without BOM_UPLOAD is a
+	// misconfiguration that would otherwise only show up as a per-scan upload
+	// failure, long after the deployment looked healthy.
+	if config.DTrack.URL != "" && dtrack != nil {
+		if err := dtrack.Ping(ctx); err != nil {
+			return fmt.Errorf("dependency-track not reachable at %s: %w", config.DTrack.URL, err)
+		}
+		slog.Info("dependency-track is reachable", slog.String("url", config.DTrack.URL))
+	} else if config.DTrack.URL == "" {
+		slog.Warn("SCANNER_DTRACK_URL is unset; SBOMs will be returned to Harbor but not uploaded to Dependency-Track")
 	}
 
 	if config.API.IsTLSEnabled() {

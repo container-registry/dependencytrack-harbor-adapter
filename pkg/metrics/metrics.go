@@ -10,21 +10,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-const namespace = "harbor_scanner_waybill"
+const namespace = "harbor_scanner_dependencytrack"
 
-// Category label values that do not come from waybill.ErrorCategory.
+// Category label values that do not come from syft.ErrorCategory.
 const (
 	// CategoryNone is the category on a successful scan. Prometheus wants a
 	// consistent label set across a metric, so success carries an explicit
 	// value rather than an empty string.
 	CategoryNone = "none"
 	// CategoryAdapter is a failure the adapter raised itself. Kept apart from
-	// WaybillExec so an adapter bug is not blamed on the scanner.
+	// SyftExec so an adapter bug is not blamed on the scanner.
 	CategoryAdapter = "Adapter"
 	// CategoryExpired is a job whose store record was gone by the time it ran:
 	// it waited longer than the scan job TTL. That is a capacity signal —
 	// raise concurrency, add replicas, or raise the TTL — not a failure of
-	// either the adapter or waybill, so it does not pollute either count.
+	// either the adapter or syft, so it does not pollute either count.
 	CategoryExpired = "Expired"
 	// CategoryImageTooLarge is an artifact rejected by the pre-pull size cap.
 	// It is a deliberate refusal, not a fault: the alternative is an OOM that
@@ -40,9 +40,9 @@ const (
 
 var (
 	// ScansTotal is the one that matters operationally: category comes from
-	// waybill.ErrorCategory, so a spike in RegistryPullAuth points at the robot
-	// account and a spike in WaybillExec points at the scanner itself. Both
-	// labels are bounded enums, so cardinality is fixed.
+	// syft.ErrorCategory, so a spike in RegistryPullAuth points at the robot
+	// account and a spike in SyftExec points at the scanner itself. Both labels
+	// are bounded enums, so cardinality is fixed.
 	ScansTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "scans_total",
@@ -100,11 +100,11 @@ var (
 
 	// ImageCompressedBytes is what the size cap is compared against, recorded
 	// for every artifact the probe could measure. It is the input to sizing
-	// both SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit.
+	// both SCANNER_SYFT_MAX_IMAGE_SIZE and the container memory limit.
 	// Buckets are explicit rather than exponential so there is a boundary at the
-	// 512 MiB default cap. A x4 progression jumps 256 MiB straight to 1 GiB,
-	// which lumps "just under the cap" together with "twice the cap" — exactly
-	// the distinction this metric exists to support.
+	// 1 GiB default cap. A x4 progression jumps 256 MiB straight to 1 GiB, which
+	// lumps "just under the cap" together with "twice the cap" — exactly the
+	// distinction this metric exists to support.
 	ImageCompressedBytes = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace: namespace,
 		Name:      "image_compressed_bytes",
@@ -114,16 +114,59 @@ var (
 			1 << 24, // 16 MiB
 			1 << 26, // 64 MiB
 			1 << 28, // 256 MiB
-			1 << 29, // 512 MiB, the default cap
-			1 << 30, // 1 GiB
+			1 << 29, // 512 MiB
+			1 << 30, // 1 GiB, the default cap
 			1 << 31, // 2 GiB
 			1 << 32, // 4 GiB
 			1 << 34, // 16 GiB
 		},
 	})
 
+	// SBOMReusedTotal and SBOMGeneratedTotal are the ratio this adapter exists
+	// to move. A reused SBOM is one Harbor already produced, fetched as an OCI
+	// accessory for tens of KB; a generated one costs a full image pull. If the
+	// reuse share is near zero the fast path is not firing, which usually means
+	// the project never had SBOM generation enabled.
+	SBOMReusedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "sbom_reused_total",
+		Help:      "Scans served from an existing Harbor SBOM accessory, with no image pull.",
+	})
+
+	SBOMGeneratedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "sbom_generated_total",
+		Help:      "Scans that pulled the image and generated an SBOM.",
+	})
+
+	// AccessoryFetchFailuresTotal counts accessory lookups that errored, which
+	// is distinct from finding none. A "not found" is the ordinary case and is
+	// not counted here; this metric only rises when the fast path is broken
+	// rather than inapplicable.
+	AccessoryFetchFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "accessory_fetch_failures_total",
+		Help:      "Harbor SBOM accessory lookups that failed; the scan fell back to generating.",
+	})
+
+	BOMUploadsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "bom_uploads_total",
+		Help:      "CycloneDX documents accepted by Dependency-Track.",
+	})
+
+	// BOMUploadFailuresTotal is the one to alert on. By default a failed upload
+	// does not fail the scan, so Harbor looks entirely healthy while the
+	// Dependency-Track portfolio silently stops being updated. This counter is
+	// the only symptom.
+	BOMUploadFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "bom_upload_failures_total",
+		Help:      "CycloneDX uploads Dependency-Track rejected or that never reached it.",
+	})
+
 	// ReportBytes is measured on the stored (compressed) envelope, so it tracks
-	// what actually lands in Redis rather than what waybill emitted.
+	// what actually lands in Redis rather than what syft emitted.
 	ReportBytes = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace: namespace,
 		Name:      "report_stored_bytes",

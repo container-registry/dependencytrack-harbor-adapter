@@ -1,7 +1,8 @@
-// Command scanner-waybill is the Harbor Pluggable Scanner Adapter that wraps the
-// waybill SBOM CLI. It serves the Scanner Adapter API v1: waybill pulls the
-// artifact from the Harbor-managed registry and the adapter returns the SPDX 2.3
-// document it produces in a Harbor report envelope.
+// Command scanner-dependencytrack is the Harbor Pluggable Scanner Adapter that
+// feeds Dependency-Track. It serves the Scanner Adapter API v1: for each
+// artifact it reuses the SBOM Harbor already generated when there is one, or
+// generates one with syft, returns the SPDX 2.3 document to Harbor, and uploads
+// the same inventory to Dependency-Track as CycloneDX.
 package main
 
 import (
@@ -17,19 +18,21 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
-	v1 "github.com/container-registry/waybill-harbor-adapter/pkg/http/api/v1"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/imageprobe"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
-	predis "github.com/container-registry/waybill-harbor-adapter/pkg/persistence/redis"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/queue"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/redisx"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/scan"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/waybill"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/accessory"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/dtrack"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/http/api"
+	v1 "github.com/container-registry/dependencytrack-harbor-adapter/pkg/http/api/v1"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/imageprobe"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence/memory"
+	predis "github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence/redis"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/queue"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/redisx"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/scan"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/syft"
 )
 
 // Stamped at build time by the Taskfile ldflags.
@@ -40,9 +43,15 @@ var (
 )
 
 const (
-	scannerName   = "waybill"
-	scannerVendor = "Kusari"
+	scannerName   = "Dependency-Track"
+	scannerVendor = "container-registry.com"
 )
+
+// accessoryTimeout bounds the SBOM accessory lookup. It is deliberately a small
+// fraction of the scan timeout: the lookup is an optimization, and time spent
+// waiting on a stalled registry here is taken directly out of the budget the
+// fallback generation still needs.
+const accessoryTimeout = 30 * time.Second
 
 // queueDepthTimeout bounds the LLEN behind the queue_depth gauge. It runs on the
 // Prometheus scrape goroutine, so it must not outlive a scrape; the Redis pool's
@@ -53,7 +62,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVersion {
-		fmt.Printf("scanner-waybill %s (commit %s, built %s)\n", version, commit, date)
+		fmt.Printf("scanner-dependencytrack %s (commit %s, built %s)\n", version, commit, date)
 		return
 	}
 
@@ -73,7 +82,7 @@ type redisPinger struct{ rdb *redis.Client }
 func (p redisPinger) Ping(ctx context.Context) error { return p.rdb.Ping(ctx).Err() }
 
 func run(ctx context.Context, info etc.BuildInfo) error {
-	slog.Info("Starting scanner-waybill",
+	slog.Info("Starting scanner-dependencytrack",
 		slog.String("version", info.Version),
 		slog.String("commit", info.Commit),
 		slog.String("built_at", info.Date),
@@ -85,18 +94,28 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 		return fmt.Errorf("getting config: %w", err)
 	}
 
-	wrapper := waybill.NewWrapper(config.Waybill)
+	wrapper := syft.NewWrapper(config.Syft)
 
-	// scanner.version is the waybill CLI version, exec'd once at startup, never
-	// from env (plan D-4).
+	// scanner.version is the syft CLI version, exec'd once at startup rather than
+	// read from an env var, so what Harbor displays is what will actually run.
 	versionCtx, cancelVersion := context.WithTimeout(ctx, 15*time.Second)
-	waybillVersion, err := wrapper.Version(versionCtx)
+	syftVersion, err := wrapper.Version(versionCtx)
 	cancelVersion()
 	if err != nil {
-		return fmt.Errorf("determining waybill version: %w", err)
+		return fmt.Errorf("determining syft version: %w", err)
 	}
-	scanner := harbor.Scanner{Name: scannerName, Vendor: scannerVendor, Version: waybillVersion}
-	slog.Info("waybill scanner", slog.String("version", waybillVersion))
+	scanner := harbor.Scanner{Name: scannerName, Vendor: scannerVendor, Version: syftVersion}
+	slog.Info("syft", slog.String("version", syftVersion))
+
+	var uploader dtrack.Client
+	if config.DTrack.URL != "" {
+		uploader = dtrack.NewClient(dtrack.Config{
+			BaseURL:       config.DTrack.URL,
+			APIKey:        config.DTrack.APIKey,
+			Timeout:       config.DTrack.Timeout,
+			SkipTLSVerify: config.DTrack.InsecureSkipVerify,
+		})
+	}
 
 	var (
 		store  persistence.Store
@@ -120,25 +139,37 @@ func run(ctx context.Context, info etc.BuildInfo) error {
 	}
 
 	// nil versioner: the exec-ability check the checker would do is exactly the
-	// call just made above, and running waybill --version twice at startup buys
+	// call just made above, and running syft version twice at startup buys
 	// nothing.
-	if err = etc.Check(ctx, config, nil, pinger); err != nil {
+	var dtrackPinger etc.Pinger
+	if uploader != nil {
+		dtrackPinger = uploader
+	}
+	if err = etc.Check(ctx, config, nil, pinger, dtrackPinger); err != nil {
 		return fmt.Errorf("checking config: %w", err)
 	}
-	if err = etc.SweepStaleWorkDirs(config.Waybill.WorkDir); err != nil {
+	if err = etc.SweepStaleWorkDirs(config.Syft.WorkDir); err != nil {
 		slog.Warn("Failed to sweep stale work dirs", slog.String("err", err.Error()))
 	}
 
-	prober, err := imageprobe.New(config.Waybill)
+	prober, err := imageprobe.New(config.Syft)
 	if err != nil {
 		return fmt.Errorf("constructing image prober: %w", err)
 	}
-	if config.Waybill.MaxImageSize <= 0 {
+	if config.Syft.MaxImageSize <= 0 {
 		slog.Warn("Pre-pull artifact size cap is disabled: an oversized image can OOM this container " +
-			"and take every in-flight scan with it. Set SCANNER_WAYBILL_MAX_IMAGE_SIZE.")
+			"and take every in-flight scan with it. Set SCANNER_SYFT_MAX_IMAGE_SIZE.")
 	}
-	controller := scan.NewControllerWithSizeCap(
-		store, wrapper, scanner, config.Waybill.WorkDir, prober, config.Waybill.MaxImageSize)
+	controller := scan.NewController(store, wrapper, scanner, config.Syft.WorkDir, scan.Options{
+		Fetcher:                accessory.NewFetcher(accessoryTimeout),
+		Uploader:               uploader,
+		Prober:                 prober,
+		MaxImageSize:           config.Syft.MaxImageSize,
+		FailOnUploadError:      config.DTrack.FailScanOnUploadError,
+		ProjectTags:            config.DTrack.ProjectTags,
+		NestUnderHarborProject: config.DTrack.NestUnderHarborProject,
+		SkipTLSVerify:          config.Syft.InsecureSkipVerify,
+	})
 
 	// The enqueuer and the worker are always built as a pair. Previously the
 	// worker was conditional while the enqueuer was not, so the memory backend

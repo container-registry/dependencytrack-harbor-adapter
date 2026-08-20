@@ -25,10 +25,10 @@ func TestMemoryBackendValidatesWorkerConcurrency(t *testing.T) {
 }
 
 func TestNegativeMaxImageSizeIsRejected(t *testing.T) {
-	t.Setenv("SCANNER_WAYBILL_MAX_IMAGE_SIZE", "-1")
+	t.Setenv("SCANNER_SYFT_MAX_IMAGE_SIZE", "-1")
 	_, err := GetConfig()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "SCANNER_WAYBILL_MAX_IMAGE_SIZE")
+	assert.Contains(t, err.Error(), "SCANNER_SYFT_MAX_IMAGE_SIZE")
 }
 
 // TestPartialTLSIsRejected pins that a typo in one of two TLS secrets fails the

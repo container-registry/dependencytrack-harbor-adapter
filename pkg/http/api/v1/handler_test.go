@@ -14,13 +14,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence/memory"
 )
 
 type fakeEnqueuer struct {
@@ -41,7 +41,7 @@ func newHandler(t *testing.T, store persistence.Store, enq *fakeEnqueuer) http.H
 	// developer's shell would otherwise arm the auth middleware and 401 every
 	// test that does not send the header.
 	cfg.API.APIKey = ""
-	scanner := harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "0.1.0-alpha.55"}
+	scanner := harbor.Scanner{Name: "syft", Vendor: "Kusari", Version: "0.1.0-alpha.55"}
 	info := etc.BuildInfo{Version: "1.2.3", Commit: "deadbee", Date: "2026-07-09"}
 	return NewAPIHandler(info, cfg, scanner, enq, store, func(context.Context) error { return nil })
 }
@@ -243,12 +243,12 @@ func TestGetReport_UnknownReturns404(t *testing.T) {
 
 func TestGetReport_FailedReturns500(t *testing.T) {
 	store := memory.NewStore()
-	seedJob(t, store, "x1", job.Failed, nil, "waybill exploded")
+	seedJob(t, store, "x1", job.Failed, nil, "syft exploded")
 	h := newHandler(t, store, &fakeEnqueuer{})
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, reportRequest("x1", false))
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
-	assert.Contains(t, rr.Body.String(), "waybill exploded")
+	assert.Contains(t, rr.Body.String(), "syft exploded")
 }
 
 func TestGetReport_MissingSBOMMediaType400(t *testing.T) {
@@ -267,7 +267,7 @@ func TestAPIKeyMiddleware(t *testing.T) {
 	require.NoError(t, err)
 	cfg.API.MetricsEnabled = false
 	cfg.API.APIKey = "the-key"
-	scanner := harbor.Scanner{Name: "waybill", Vendor: "Kusari", Version: "v"}
+	scanner := harbor.Scanner{Name: "syft", Vendor: "Kusari", Version: "v"}
 	h := NewAPIHandler(etc.BuildInfo{}, cfg, scanner, &fakeEnqueuer{id: "x"}, memory.NewStore(), func(context.Context) error { return nil })
 
 	// Missing key -> 401.
@@ -304,12 +304,12 @@ func TestMetricsExposesAdapterCollectors(t *testing.T) {
 
 	body := rr.Body.String()
 	for _, name := range []string{
-		"harbor_scanner_waybill_scans_total",
-		"harbor_scanner_waybill_scan_duration_seconds",
-		"harbor_scanner_waybill_queue_wait_seconds",
-		"harbor_scanner_waybill_scans_in_flight",
-		"harbor_scanner_waybill_enqueued_total",
-		"harbor_scanner_waybill_report_stored_bytes",
+		"harbor_scanner_dependencytrack_scans_total",
+		"harbor_scanner_dependencytrack_scan_duration_seconds",
+		"harbor_scanner_dependencytrack_queue_wait_seconds",
+		"harbor_scanner_dependencytrack_scans_in_flight",
+		"harbor_scanner_dependencytrack_enqueued_total",
+		"harbor_scanner_dependencytrack_report_stored_bytes",
 	} {
 		assert.Contains(t, body, name)
 	}

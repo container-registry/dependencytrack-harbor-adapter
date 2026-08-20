@@ -1,6 +1,6 @@
 // Package harbor holds the Harbor Scanner Adapter API v1 domain models used by
 // this adapter. It is ported from harbor-scanner-trivy with all vulnerability
-// types stripped: waybill generates SBOMs only, so the adapter advertises a
+// types stripped: syft generates SBOMs only, so the adapter advertises a
 // single "sbom" capability.
 package harbor
 
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/http/api"
 )
 
 type CapabilityType string
@@ -89,7 +89,7 @@ func (c ScanRequest) GetImageRef() (imageRef string, insecure bool, err error) {
 // containing ':' survive). It is shared by the /scan validation and the scan
 // controller so a credential the handler 202-accepts can never fail to parse in
 // the worker. Empty input means anonymous. Any non-Basic scheme is an error:
-// this adapter advertises Basic, and waybill's credential chain takes only a
+// this adapter advertises Basic, and syft's credential chain takes only a
 // username/password pair (docs/upstream-issues.md issue 3).
 func ParseBasicAuthorization(authorization string) (username, password string, err error) {
 	if authorization == "" {
@@ -129,7 +129,7 @@ type ScanResponse struct {
 }
 
 // ScanReport is the SBOM report envelope returned to Harbor. sbom is the entire
-// waybill SPDX 2.3 document embedded verbatim as a JSON object (Harbor parses it
+// syft SPDX 2.3 document embedded verbatim as a JSON object (Harbor parses it
 // into RawSBOMReport{sbom map[string]any}). It is stored pre-marshaled as
 // json.RawMessage in the report envelope (see pkg/scan) to avoid re-marshaling
 // the possibly multi-MB document per report poll.

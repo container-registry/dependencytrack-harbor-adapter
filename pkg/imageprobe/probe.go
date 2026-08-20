@@ -1,8 +1,8 @@
 // Package imageprobe reads an artifact's manifest to learn how big it is before
-// waybill is asked to pull it.
+// syft is asked to pull it.
 //
 // It exists because memory is the binding constraint and nothing else bounds it.
-// waybill holds layer content in memory during the pull, so peak RSS runs at
+// syft holds layer content in memory during the pull, so peak RSS runs at
 // ~4.7x the compressed size: golang:1.24 (316 MB) peaks at 1.32 GiB, node:22
 // (400 MB) at 1.75 GiB, and nvidia/cuda:12.6.3-devel (3.7 GB) is still
 // OOM-killed at a 7Gi limit. The kill lands on the container, not on the job, so
@@ -11,7 +11,7 @@
 //
 // This is a manifest request, not a pull: one GET of a few kilobytes, no blobs.
 // That is the whole reason go-containerregistry is acceptable back on the
-// runtime path after the switch to waybill's native pull removed it — the thing
+// runtime path after the switch to syft's native pull removed it — the thing
 // that was expensive was fetching every layer twice, not reading a manifest.
 //
 // The registry is not trusted to be well-behaved. Sizes come from a document the
@@ -35,7 +35,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
 )
 
 // maxIndexDepth bounds nested-index recursion. Nesting is legal but vanishingly
@@ -49,7 +49,7 @@ const maxIndexDepth = 4
 const maxPlausibleSize = int64(1) << 45 // 32 TiB
 
 // Target is the artifact to measure, with the credentials and transport the pull
-// would use. It mirrors waybill.ScanTarget rather than importing it, so the
+// would use. It mirrors syft.ScanTarget rather than importing it, so the
 // probe does not depend on the scanner wrapper.
 type Target struct {
 	Ref      string
@@ -71,7 +71,7 @@ func (e *TooLargeError) Error() string {
 	// artifact.
 	return fmt.Sprintf(
 		"artifact %s is %d compressed bytes, over the %d limit; scanning it needs roughly %d bytes of memory "+
-			"(raise SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit together)",
+			"(raise SCANNER_SYFT_MAX_IMAGE_SIZE and the container memory limit together)",
 		e.Ref, e.Size, e.Limit, EstimatedMemory(e.Size))
 }
 
@@ -100,23 +100,23 @@ func EstimatedMemory(compressedSize int64) int64 {
 
 // Prober measures an artifact without pulling it.
 type Prober interface {
-	// CompressedSize is the total size of the layers waybill would download. For
-	// a multi-platform index it is the platform waybill will resolve: the one
-	// SCANNER_WAYBILL_IMAGE_PLATFORM names, or the largest when it names none.
+	// CompressedSize is the total size of the layers syft would download. For
+	// a multi-platform index it is the platform syft will resolve: the one
+	// SCANNER_SYFT_IMAGE_PLATFORM names, or the largest when it names none.
 	CompressedSize(ctx context.Context, target Target) (int64, error)
 }
 
 type prober struct {
 	transport http.RoundTripper
-	// platform mirrors SCANNER_WAYBILL_IMAGE_PLATFORM. Without it the probe
+	// platform mirrors SCANNER_SYFT_IMAGE_PLATFORM. Without it the probe
 	// charges the largest child of an index, which would refuse an artifact
 	// whose selected platform is comfortably under the cap.
 	platform string
 }
 
-// New builds a Prober sharing the registry TLS settings the waybill wrapper
+// New builds a Prober sharing the registry TLS settings the syft wrapper
 // passes on the command line, so the probe and the pull trust the same roots.
-func New(cfg etc.Waybill) (Prober, error) {
+func New(cfg etc.Syft) (Prober, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 
 	if cfg.InsecureSkipVerify {
@@ -127,22 +127,20 @@ func New(cfg etc.Waybill) (Prober, error) {
 		tlsConfig.InsecureSkipVerify = true // #nosec G402
 	}
 
-	if len(cfg.RegistryCACerts) > 0 {
+	if cfg.RegistryCACert != "" {
 		pool, err := x509.SystemCertPool()
 		if err != nil {
 			pool = x509.NewCertPool()
 		}
-		for _, path := range cfg.RegistryCACerts {
-			pem, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("reading registry CA cert %s: %w", path, err)
-			}
-			// AppendCertsFromPEM reports whether anything was added. Discarding
-			// it turns a malformed bundle into a confusing handshake failure on
-			// every scan instead of one startup error.
-			if !pool.AppendCertsFromPEM(pem) {
-				return nil, fmt.Errorf("registry CA cert %s contains no usable certificate", path)
-			}
+		pem, err := os.ReadFile(cfg.RegistryCACert)
+		if err != nil {
+			return nil, fmt.Errorf("reading registry CA cert %s: %w", cfg.RegistryCACert, err)
+		}
+		// AppendCertsFromPEM reports whether anything was added. Discarding it
+		// turns a malformed bundle into a confusing handshake failure on every
+		// scan instead of one startup error.
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("registry CA cert %s contains no usable certificate", cfg.RegistryCACert)
 		}
 		tlsConfig.RootCAs = pool
 	}
@@ -154,7 +152,7 @@ func New(cfg etc.Waybill) (Prober, error) {
 	transport := base.Clone()
 	transport.TLSClientConfig = tlsConfig
 
-	return &prober{transport: transport, platform: strings.TrimSpace(cfg.ImagePlatform)}, nil
+	return &prober{transport: transport, platform: strings.TrimSpace(cfg.Platform)}, nil
 }
 
 func (p *prober) CompressedSize(ctx context.Context, target Target) (int64, error) {
@@ -198,13 +196,13 @@ func (p *prober) CompressedSize(ctx context.Context, target Target) (int64, erro
 	return manifestSize(img)
 }
 
-// indexSize returns the size of the platform waybill will pull, not the sum:
-// waybill resolves one platform. Harbor normally fans a scan out to the index's
+// indexSize returns the size of the platform syft will pull, not the sum:
+// syft resolves one platform. Harbor normally fans a scan out to the index's
 // children and sends each child digest, so this path is the exception.
 //
-// When SCANNER_WAYBILL_IMAGE_PLATFORM matches no child it falls back to the
+// When SCANNER_SYFT_IMAGE_PLATFORM matches no child it falls back to the
 // largest child. Returning zero there would be a guard bypass, not a safe
-// default: the platform is a hint about what waybill will choose, and being
+// default: the platform is a hint about what syft will choose, and being
 // wrong about it must over-estimate, never under-estimate.
 //
 // A nested index is measured by recursing, never skipped. Treating an
@@ -246,7 +244,7 @@ func (p *prober) indexSize(idx v1.ImageIndex, depth int) (int64, error) {
 			continue
 		}
 		if size < 0 {
-			continue // not a child waybill would pull
+			continue // not a child syft would pull
 		}
 
 		if size > largestAny {
@@ -271,7 +269,7 @@ func (p *prober) indexSize(idx v1.ImageIndex, depth int) (int64, error) {
 	return largestAny, nil
 }
 
-// childSize measures one index entry, returning -1 for entries waybill would
+// childSize measures one index entry, returning -1 for entries syft would
 // never pull (attestations and signatures ride along in the index as non-image
 // artifacts).
 func (p *prober) childSize(idx v1.ImageIndex, child v1.Descriptor, depth int) (int64, error) {

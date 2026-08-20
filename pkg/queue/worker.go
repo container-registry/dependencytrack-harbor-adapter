@@ -11,9 +11,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/xerrors"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/scan"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/scan"
 )
 
 // popTimeout is how long a worker blocks on BLPOP before looping. It only sets
@@ -52,7 +52,7 @@ type worker struct {
 	stop     chan struct{}
 	done     sync.WaitGroup
 	// cancel aborts the context handed to in-flight scans, so Stop() tears down
-	// the waybill subprocess rather than waiting out its timeout.
+	// the syft subprocess rather than waiting out its timeout.
 	cancel context.CancelFunc
 
 	controller scan.Controller
@@ -228,13 +228,13 @@ func (w *worker) scanArtifact(ctx context.Context, payload string) error {
 	return w.runJob(ctx, j)
 }
 
-// runJob bounds the whole job (waybill's registry pull plus its scan) by a
+// runJob bounds the whole job (syft's registry pull plus its scan) by a
 // deadline. Start receives context.Background() from main, so without this the
 // job would be unbounded: a tarpit or half-open registry can trickle bytes for
 // as long as it likes, permanently consuming this worker goroutine (default
 // concurrency 1 => all scanning halts until process restart, job stuck Pending
 // until the 1h TTL). The deadline is the lock TTL: the job may run for as long as
-// the lock protects it, and no longer. The context reaches the waybill subprocess
+// the lock protects it, and no longer. The context reaches the syft subprocess
 // through exec.CommandContext, which kills it when the deadline fires.
 func (w *worker) runJob(ctx context.Context, j Job) error {
 	observeQueueWait(j)

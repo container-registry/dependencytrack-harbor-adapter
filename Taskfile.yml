@@ -1,4 +1,4 @@
-# Build automation for waybill-harbor-adapter
+# Build automation for dependencytrack-harbor-adapter
 #
 # CI-aware: local builds target the native arch only, CI builds all platforms.
 # Explicit PLATFORMS=... always wins. Version comes from `git describe`; there is
@@ -21,8 +21,8 @@ dotenv:
   - versions.env
 
 vars:
-  BINARY: scanner-waybill
-  IMAGE_NAME: waybill-harbor-adapter
+  BINARY: scanner-dependencytrack
+  IMAGE_NAME: dependencytrack-harbor-adapter
 
   GIT_COMMIT:
     sh: git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown"
@@ -41,11 +41,11 @@ vars:
     -X main.date={{.BUILD_DATE}}
 
   # Multi-arch image build configuration.
-  # Registry: 8gears.container-registry.com/8gcr/waybill-harbor-adapter:<tag>
+  # Registry: 8gears.container-registry.com/8gcr/dependencytrack-harbor-adapter:<tag>
   REGISTRY_ADDRESS: '{{.REGISTRY_ADDRESS | default "8gears.container-registry.com"}}'
   REGISTRY_PROJECT: '{{.REGISTRY_PROJECT | default "8gcr"}}'
   IMAGE_PLATFORMS: '{{.IMAGE_PLATFORMS | default "linux/amd64,linux/arm64"}}'
-  IMAGE_BUILDER: "waybill-adapter-multiarch"
+  IMAGE_BUILDER: "dependencytrack-adapter-multiarch"
 
   # Digest-pinned distroless base assembled from versions.env.
   BASE_IMAGE: 'gcr.io/distroless/cc-debian12:{{.DISTROLESS_BASE_IMAGE_TAG}}@{{.DISTROLESS_IMAGE_DIGEST}}'
@@ -57,7 +57,7 @@ vars:
 
 tasks:
   default:
-    desc: "Build the scanner-waybill binary"
+    desc: "Build the scanner-dependencytrack binary"
     cmds:
       - task: build
 
@@ -66,7 +66,7 @@ tasks:
   # ============================================================================
 
   build:
-    desc: "Build scanner-waybill binaries for PLATFORMS (default: native arch, CI: all)"
+    desc: "Build scanner-dependencytrack binaries for PLATFORMS (default: native arch, CI: all)"
     vars:
       PLATFORMS: '{{.PLATFORMS | default .CI_PLATFORMS}}'
     cmds:
@@ -88,7 +88,7 @@ tasks:
       GOARCH: '{{.GOARCH}}'
       CGO_ENABLED: '0'
     cmds:
-      - go build {{.GOBUILD_FLAGS}} -ldflags "{{.LDFLAGS}}" -o bin/{{.PLATFORM}}/{{.BINARY}} ./cmd/scanner-waybill
+      - go build {{.GOBUILD_FLAGS}} -ldflags "{{.LDFLAGS}}" -o bin/{{.PLATFORM}}/{{.BINARY}} ./cmd/scanner-dependencytrack
 
   build:lprobe:
     desc: "Fetch the pinned lprobe healthcheck binary for PLATFORMS (image dependency)"
@@ -128,72 +128,68 @@ tasks:
       - cmd: echo "{{.LPROBE_VERSION}}" > bin/{{.PLATFORM}}/.lprobe-version
         silent: true
 
-  build:waybill:
-    desc: "Fetch the pinned waybill CLI for PLATFORMS (image dependency)"
+  build:syft:
+    desc: "Fetch the pinned syft CLI for PLATFORMS (image dependency)"
     vars:
       PLATFORMS: '{{.PLATFORMS | default .CI_PLATFORMS}}'
     cmds:
       - for: {var: PLATFORMS, split: ','}
-        task: 'build:waybill:{{.ITEM | trim | replace "/" "-"}}'
+        task: 'build:syft:{{.ITEM | trim | replace "/" "-"}}'
 
-  build:waybill:*:
-    desc: "Fetch pinned waybill for one platform, e.g. build:waybill:linux-arm64"
+  build:syft:*:
+    desc: "Fetch pinned syft for one platform, e.g. build:syft:linux-arm64"
     vars:
       PLATFORM: '{{index .MATCH 0}}'
       GOARCH: '{{index (splitList "-" (index .MATCH 0)) 1}}'
     status:
-      - test -x bin/{{.PLATFORM}}/waybill
-      - test "$(cat bin/{{.PLATFORM}}/.waybill-version 2>/dev/null)" = "{{.WAYBILL_CLI_VERSION}}"
+      - test -x bin/{{.PLATFORM}}/syft
+      - test "$(cat bin/{{.PLATFORM}}/.syft-version 2>/dev/null)" = "{{.SYFT_CLI_VERSION}}"
     cmds:
       - cmd: mkdir -p bin/{{.PLATFORM}}
         silent: true
-      # Release tarballs are public; the ghcr container package is not (docs/spike-m1.md).
-      # The binary here is byte-identical to the one in the upstream image.
       - |
         case '{{.GOARCH}}' in
-          amd64) rust_arch='x86_64';  sha='{{.WAYBILL_CLI_SHA256_LINUX_AMD64}}' ;;
-          arm64) rust_arch='aarch64'; sha='{{.WAYBILL_CLI_SHA256_LINUX_ARM64}}' ;;
-          *) echo "unsupported waybill arch: {{.GOARCH}}" >&2; exit 1 ;;
+          amd64) sha='{{.SYFT_CLI_SHA256_LINUX_AMD64}}' ;;
+          arm64) sha='{{.SYFT_CLI_SHA256_LINUX_ARM64}}' ;;
+          *) echo "unsupported syft arch: {{.GOARCH}}" >&2; exit 1 ;;
         esac
-        stem="waybill-{{.WAYBILL_CLI_VERSION}}-${rust_arch}-unknown-linux-gnu"
+        # Release assets carry the version without the leading "v".
+        bare='{{.SYFT_CLI_VERSION}}'; bare="${bare#v}"
+        stem="syft_${bare}_linux_{{.GOARCH}}"
         tmp="$(mktemp -d)"
         trap 'rm -rf "$tmp"' EXIT
-        url="https://github.com/kusari-oss/waybill/releases/download/{{.WAYBILL_CLI_VERSION}}/${stem}.tar.gz"
-        curl -sSfL "$url" -o "$tmp/waybill.tar.gz"
+        url="https://github.com/anchore/syft/releases/download/{{.SYFT_CLI_VERSION}}/${stem}.tar.gz"
+        curl -sSfL "$url" -o "$tmp/syft.tar.gz"
         if command -v sha256sum >/dev/null 2>&1; then
-          echo "${sha}  $tmp/waybill.tar.gz" | sha256sum -c -
+          echo "${sha}  $tmp/syft.tar.gz" | sha256sum -c -
         else
-          echo "${sha}  $tmp/waybill.tar.gz" | shasum -a 256 -c -
+          echo "${sha}  $tmp/syft.tar.gz" | shasum -a 256 -c -
         fi
-        tar -xzf "$tmp/waybill.tar.gz" -C "$tmp"
-        install -m 0755 "$tmp/${stem}/waybill" bin/{{.PLATFORM}}/waybill
-        install -m 0644 "$tmp/${stem}/LICENSE" bin/{{.PLATFORM}}/waybill-LICENSE
-      - cmd: echo "{{.WAYBILL_CLI_VERSION}}" > bin/{{.PLATFORM}}/.waybill-version
-        silent: true
+        tar -xzf "$tmp/syft.tar.gz" -C "$tmp"
+        install -m 0755 "$tmp/syft" bin/{{.PLATFORM}}/syft
+        # LICENSE travels with the binary: the image redistributes it (see NOTICE).
+        install -m 0644 "$tmp/LICENSE" bin/{{.PLATFORM}}/syft-LICENSE
+        echo '{{.SYFT_CLI_VERSION}}' > bin/{{.PLATFORM}}/.syft-version
 
-  waybill:checksums:
-    desc: "Recompute WAYBILL_CLI_SHA256_* for the pinned WAYBILL_CLI_VERSION"
-    # Renovate bumps WAYBILL_CLI_VERSION but cannot recompute these digests, so
+  syft:checksums:
+    desc: "Recompute SYFT_CLI_SHA256_* for the pinned SYFT_CLI_VERSION"
+    # Renovate bumps SYFT_CLI_VERSION but cannot recompute these digests, so
     # without this every bump PR leaves the pins pointing at the previous release
-    # and every build:waybill fails checksum verification.
+    # and every build:syft fails checksum verification.
     silent: true
     cmds:
       - |
         set -eu
-        ver='{{.WAYBILL_CLI_VERSION}}'
-        echo "waybill ${ver}" >&2
-        for pair in amd64:x86_64 arm64:aarch64; do
-          goarch="${pair%%:*}"; rust_arch="${pair#*:}"
-          url="https://github.com/kusari-oss/waybill/releases/download/${ver}/waybill-${ver}-${rust_arch}-unknown-linux-gnu.tar.gz"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sum=$(curl -sSfL "$url" | sha256sum | cut -d' ' -f1)
-          else
-            sum=$(curl -sSfL "$url" | shasum -a 256 | cut -d' ' -f1)
-          fi
-          printf 'WAYBILL_CLI_SHA256_LINUX_%s=%s\n' "$(echo "$goarch" | tr '[:lower:]' '[:upper:]')" "$sum"
+        ver='{{.SYFT_CLI_VERSION}}'; bare="${ver#v}"
+        echo "syft ${ver}" >&2
+        sums=$(curl -sSfL "https://github.com/anchore/syft/releases/download/${ver}/syft_${bare}_checksums.txt")
+        for goarch in amd64 arm64; do
+          sum=$(echo "$sums" | awk -v f="syft_${bare}_linux_${goarch}.tar.gz" '$2 == f {print $1}')
+          [ -n "$sum" ] || { echo "no checksum for ${goarch}" >&2; exit 1; }
+          printf 'SYFT_CLI_SHA256_LINUX_%s=%s\n' "$(echo "$goarch" | tr '[:lower:]' '[:upper:]')" "$sum"
         done
         echo "" >&2
-        echo "Replace the WAYBILL_CLI_SHA256_* lines in versions.env with the above." >&2
+        echo "Replace the SYFT_CLI_SHA256_* lines in versions.env with the above." >&2
 
   # ============================================================================
   # Lint & Vulnerability Checks
@@ -282,7 +278,7 @@ tasks:
         vars: {PLATFORMS: '{{.PLATFORMS}}'}
       - task: build:lprobe
         vars: {PLATFORMS: '{{.PLATFORMS}}'}
-      - task: build:waybill
+      - task: build:syft
         vars: {PLATFORMS: '{{.PLATFORMS}}'}
       - '{{if eq .PUSH "true"}}docker buildx inspect {{.IMAGE_BUILDER}} >/dev/null 2>&1 || docker buildx create --name {{.IMAGE_BUILDER}} --driver docker-container --bootstrap{{else}}true{{end}}'
       - >-
@@ -305,34 +301,34 @@ tasks:
   # ============================================================================
 
   run:
-    desc: "Run the adapter locally with debug logging (requires redis + waybill on PATH)"
+    desc: "Run the adapter locally with debug logging (requires redis + syft on PATH)"
     vars:
       RUN_TMP:
         sh: echo "${TMPDIR:-/tmp/}"
-      # SCANNER_WAYBILL_BINARY defaults to the absolute /usr/local/bin/waybill the
-      # image ships, so a waybill merely on PATH would not be found. Resolve it
-      # here. `task build:waybill` is deliberately not used: it stages a
+      # SCANNER_SYFT_BINARY defaults to the absolute /usr/local/bin/syft the
+      # image ships, so a syft merely on PATH would not be found. Resolve it
+      # here. `task build:syft` is deliberately not used: it stages a
       # linux-<arch> binary for the image, which will not exec on a macOS host.
-      WAYBILL_BIN:
-        sh: command -v waybill || true
+      SYFT_BIN:
+        sh: command -v syft || true
     preconditions:
-      - sh: '[ -n "{{.WAYBILL_BIN}}" ]'
-        msg: "waybill not found on PATH. Install it from https://github.com/kusari-oss/waybill/releases (WAYBILL_CLI_VERSION in versions.env is the pin), or pass the path via `task run WAYBILL_BIN=/path/to/waybill`."
+      - sh: '[ -n "{{.SYFT_BIN}}" ]'
+        msg: "syft not found on PATH. Install it from https://github.com/anchore/syft/releases (SYFT_CLI_VERSION in versions.env is the pin), or pass the path via `task run SYFT_BIN=/path/to/syft`."
     env:
       SCANNER_LOG_LEVEL: debug
       SCANNER_REDIS_URL: redis://localhost:6379
-      SCANNER_WAYBILL_BINARY: '{{.WAYBILL_BIN}}'
-      SCANNER_WAYBILL_WORK_DIR: '{{.RUN_TMP}}waybill-harbor-adapter/work'
+      SCANNER_SYFT_BINARY: '{{.SYFT_BIN}}'
+      SCANNER_SYFT_WORK_DIR: '{{.RUN_TMP}}dependencytrack-harbor-adapter/work'
     cmds:
-      - mkdir -p "$SCANNER_WAYBILL_WORK_DIR"
-      - go run ./cmd/scanner-waybill
+      - mkdir -p "$SCANNER_SYFT_WORK_DIR"
+      - go run ./cmd/scanner-dependencytrack
 
   dev:up:
     desc: "Local harness: redis + adapter image on one compose network"
-    # build:waybill is required, not optional: the Dockerfile COPYs the staged
-    # waybill binary out of bin/, so without it the compose build fails on a
+    # build:syft is required, not optional: the Dockerfile COPYs the staged
+    # syft binary out of bin/, so without it the compose build fails on a
     # clean checkout.
-    deps: [build, build:lprobe, build:waybill]
+    deps: [build, build:lprobe, build:syft]
     cmds:
       - docker compose -f compose.yaml up --build -d
       - cmd: 'echo "adapter + redis are up; logs: docker compose -f compose.yaml logs -f"'
@@ -369,7 +365,7 @@ tasks:
     cmds:
       - |
         echo ""
-        echo "waybill-harbor-adapter build information"
+        echo "dependencytrack-harbor-adapter build information"
         echo ""
         echo "Build metadata:"
         echo "  Version:        {{.VERSION}}"
@@ -384,7 +380,7 @@ tasks:
         echo "  Base image:     {{.BASE_IMAGE}}"
         echo ""
         echo "Pins (versions.env):"
-        echo "  waybill CLI:    {{.WAYBILL_CLI_VERSION}} (release tarball)"
+        echo "  syft CLI:       {{.SYFT_CLI_VERSION}} (release tarball)"
         echo "  lprobe:         {{.LPROBE_VERSION}}"
         echo "  golangci-lint:  {{.GOLANGCILINT_VERSION}}"
         echo "  govulncheck:    {{.GOVULNCHECK_VERSION}}"

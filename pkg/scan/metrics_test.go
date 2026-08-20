@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -11,11 +12,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/waybill"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence/memory"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/syft"
 )
 
 // TestScanRecordsOutcomeAndCategory is the reason the metrics exist: the error
@@ -36,21 +37,21 @@ func TestScanRecordsOutcomeAndCategory(t *testing.T) {
 		},
 		{
 			name:     "registry rejected the credentials",
-			wrapErr:  &waybill.Error{Category: waybill.CategoryPullAuth, Detail: "401 Unauthorized"},
+			wrapErr:  &syft.Error{Category: syft.CategoryPullAuth, Cause: errors.New("401 Unauthorized")},
 			outcome:  metrics.OutcomeFailure,
-			category: string(waybill.CategoryPullAuth),
+			category: string(syft.CategoryPullAuth),
 		},
 		{
 			name:     "registry transport is misconfigured",
-			wrapErr:  &waybill.Error{Category: waybill.CategoryPullTransport, Detail: "unknown issuer"},
+			wrapErr:  &syft.Error{Category: syft.CategoryPullTransport, Cause: errors.New("unknown issuer")},
 			outcome:  metrics.OutcomeFailure,
-			category: string(waybill.CategoryPullTransport),
+			category: string(syft.CategoryPullTransport),
 		},
 		{
-			name:     "waybill itself failed",
-			wrapErr:  &waybill.Error{Category: waybill.CategoryExec, Detail: "exit 101"},
+			name:     "syft itself failed",
+			wrapErr:  &syft.Error{Category: syft.CategoryExec, Cause: errors.New("exit 101")},
 			outcome:  metrics.OutcomeFailure,
-			category: string(waybill.CategoryExec),
+			category: string(syft.CategoryExec),
 		},
 	}
 
@@ -67,7 +68,7 @@ func TestScanRecordsOutcomeAndCategory(t *testing.T) {
 				sbom: json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`),
 				err:  tc.wrapErr,
 			}
-			c := NewController(store, wrapper, harbor.Scanner{}, t.TempDir())
+			c := NewController(store, wrapper, harbor.Scanner{}, t.TempDir(), Options{})
 			require.NoError(t, c.Scan(context.Background(), key, &harbor.ScanRequest{
 				Registry: harbor.Registry{URL: "http://core:8080"},
 				Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},
@@ -79,10 +80,10 @@ func TestScanRecordsOutcomeAndCategory(t *testing.T) {
 	}
 }
 
-// TestAdapterFailuresAreNotBlamedOnWaybill pins the separate label for failures
-// the adapter raised itself. Folding them into WaybillExec would send an
+// TestAdapterFailuresAreNotBlamedOnSyft pins the separate label for failures
+// the adapter raised itself. Folding them into SyftExec would send an
 // operator debugging the scanner for what is an adapter bug.
-func TestAdapterFailuresAreNotBlamedOnWaybill(t *testing.T) {
+func TestAdapterFailuresAreNotBlamedOnSyft(t *testing.T) {
 	store := memory.NewStore()
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
@@ -90,8 +91,8 @@ func TestAdapterFailuresAreNotBlamedOnWaybill(t *testing.T) {
 	counter := metrics.ScansTotal.WithLabelValues(metrics.OutcomeFailure, "Adapter")
 	before := testutil.ToFloat64(counter)
 
-	c := NewController(store, &fakeWrapper{}, harbor.Scanner{}, t.TempDir())
-	// nil request: raised by the controller, never reaches waybill.
+	c := NewController(store, &fakeWrapper{}, harbor.Scanner{}, t.TempDir(), Options{})
+	// nil request: raised by the controller, never reaches syft.
 	require.NoError(t, c.Scan(context.Background(), key, nil))
 
 	assert.Equal(t, before+1, testutil.ToFloat64(counter))
@@ -109,7 +110,7 @@ func TestScanDurationIsObserved(t *testing.T) {
 	before := observationCount(t, obs)
 
 	wrapper := &fakeWrapper{sbom: json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)}
-	c := NewController(store, wrapper, harbor.Scanner{}, t.TempDir())
+	c := NewController(store, wrapper, harbor.Scanner{}, t.TempDir(), Options{})
 	require.NoError(t, c.Scan(context.Background(), key, &harbor.ScanRequest{
 		Registry: harbor.Registry{URL: "http://core:8080"},
 		Artifact: harbor.Artifact{Repository: "library/alpine", Digest: "sha256:deadbeef"},

@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/http/api"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/http/api"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
 )
 
 type capturingController struct {
@@ -204,7 +204,7 @@ func TestStopIsBoundedWhileScanning(t *testing.T) {
 }
 
 // blockingController parks inside Scan until released, but honors ctx
-// cancellation the way controller.Scan does through the waybill subprocess.
+// cancellation the way controller.Scan does through the syft subprocess.
 type blockingController struct {
 	startOnce sync.Once
 	started   chan struct{}

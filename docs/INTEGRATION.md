@@ -1,12 +1,12 @@
-# Integrating waybill-harbor-adapter with Harbor
+# Integrating dependencytrack-harbor-adapter with Harbor
 
 This adapter implements the Harbor Pluggable Scanner Adapter API v1. It wraps the
-[waybill](https://github.com/kusari-oss/waybill) SBOM CLI and advertises exactly one
+[syft](https://github.com/anchore/syft) SBOM CLI and advertises exactly one
 capability: **`sbom`**.
 
 ## READ THIS FIRST: this scanner has NO vulnerability capability
 
-waybill generates SBOMs. It does **not** detect vulnerabilities. This adapter therefore
+syft generates SBOMs. It does **not** detect vulnerabilities. This adapter therefore
 advertises only the `sbom` capability and **rejects vulnerability scan requests with HTTP
 422** (`pkg/http/api/v1/handler.go`).
 
@@ -30,8 +30,8 @@ Consequences you must plan for:
 - Produces: `application/vnd.security.sbom.report+json; version=1.0`
 - `sbom_media_types: ["application/spdx+json"]` (Harbor core hardcodes SPDX; no CycloneDX)
 - `properties["harbor.scanner-adapter/registry-authorization-type"] = "Basic"`
-- The adapter's own version is in `properties["org.label-schema.version"]`. The waybill
-  CLI version is reported in `scanner.version` (exec'd from `waybill --version` at startup).
+- The adapter's own version is in `properties["org.label-schema.version"]`. The syft
+  CLI version is reported in `scanner.version` (exec'd from `syft --version` at startup).
 
 ## Registering the scanner
 
@@ -43,9 +43,9 @@ curl -sSf -X POST "https://<harbor-host>/api/v2.0/scanners" \
   -H "Content-Type: application/json" \
   -u "<admin-user>:<admin-pass>" \
   -d '{
-    "name": "waybill",
-    "description": "waybill SBOM generator (no vulnerability scanning)",
-    "url": "http://waybill-adapter:8080",
+    "name": "syft",
+    "description": "syft SBOM generator (no vulnerability scanning)",
+    "url": "http://dependencytrack-adapter:8080",
     "disabled": false,
     "use_internal_addr": true
   }'
@@ -54,7 +54,7 @@ curl -sSf -X POST "https://<harbor-host>/api/v2.0/scanners" \
 Notes:
 
 - `url` is the in-cluster / in-network address of the adapter. On the Harbor devenv this
-  is the compose service name (e.g. `http://waybill-adapter:8080`); in Kubernetes it is
+  is the compose service name (e.g. `http://dependencytrack-adapter:8080`); in Kubernetes it is
   the Service DNS name.
 - If the adapter is protected with `SCANNER_API_AUTH_API_KEY`, tell Harbor to
   authenticate **to the adapter** by registering with `"auth": "APIKey"` (the `-u`
@@ -62,8 +62,8 @@ Notes:
 
   ```json
   {
-    "name": "waybill",
-    "url": "http://waybill-adapter:8080",
+    "name": "syft",
+    "url": "http://dependencytrack-adapter:8080",
     "auth": "APIKey",
     "access_credential": "<value of SCANNER_API_AUTH_API_KEY>"
   }
@@ -77,7 +77,7 @@ Notes:
 - Do **not** set this scanner as the project/system default if that would remove a
   vulnerability scanner from the default slot.
 
-Bind it to a project (Harbor UI: Project -> Scanner -> select `waybill`), or via the API.
+Bind it to a project (Harbor UI: Project -> Scanner -> select `syft`), or via the API.
 
 ## Triggering an SBOM scan
 
@@ -96,7 +96,7 @@ the resulting SPDX document as an `sbom.harbor` accessory. Download it via the a
 
 ## How the artifact is pulled
 
-waybill pulls it, via `--image <ref> --image-src remote`. The adapter passes the
+syft pulls it, via `--image <ref> --image-src remote`. The adapter passes the
 reference from the scan request, the transport flags below, and the Basic
 credentials (anonymous when the authorization header is empty). Credentials go
 through the environment as `WAYBILL_REGISTRY_<HOST>_USERNAME`/`_PASSWORD`, never
@@ -106,46 +106,46 @@ through argv.
 insecure automatically and becomes `--insecure-registry <host:port>`. This is why
 `use_internal_addr: true` works against the Harbor devenv's `http://core:8080`.
 
-**Private-CA registries.** Set `SCANNER_WAYBILL_REGISTRY_CA_CERTS` to a
+**Private-CA registries.** Set `SCANNER_SYFT_REGISTRY_CA_CERTS` to a
 comma-separated list of PEM bundle paths mounted into the container; each becomes a
 `--registry-ca-cert`. Every path is stat'd at startup, so a wrong path fails the
 deployment rather than every scan. Example (K8s):
 
 ```yaml
 env:
-  - name: SCANNER_WAYBILL_REGISTRY_CA_CERTS
-    value: /etc/waybill/ca/harbor-ca.pem
+  - name: SCANNER_SYFT_REGISTRY_CA_CERTS
+    value: /etc/syft/ca/harbor-ca.pem
 volumeMounts:
   - name: registry-ca
-    mountPath: /etc/waybill/ca
+    mountPath: /etc/syft/ca
     readOnly: true
 ```
 
-`SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY=true` disables chain, hostname and expiry
+`SCANNER_SYFT_INSECURE_TLS_SKIP_VERIFY=true` disables chain, hostname and expiry
 verification for every pull. It logs a WARN at startup and is for dev/CI against
 self-signed certs only — prefer the CA bundle in production.
 
-Known registry-pull errors are classified from waybill's stderr as
+Known registry-pull errors are classified from syft's stderr as
 `RegistryPullAuth` (the registry rejected the credentials),
 `RegistryPullTransport` (TLS or scheme mismatch — usually a missing
 `--insecure-registry` or CA bundle), or `RegistryPull` (other registry
-responses). The classification is heuristic — it matches waybill's own m182
-message strings — so a pull failure waybill reports differently (network/DNS
-errors, for example) can surface as `WaybillExec`. Treat the first two as
+responses). The classification is heuristic — it matches syft's own m182
+message strings — so a pull failure syft reports differently (network/DNS
+errors, for example) can surface as `SyftExec`. Treat the first two as
 configuration signals; do not assume every pull failure gets one of these
 labels.
 
-**Egress.** waybill runs with `--offline`: it makes no outbound enrichment calls
+**Egress.** syft runs with `--offline`: it makes no outbound enrichment calls
 (deps.dev, ClearlyDefined). See `docs/spike-m1.md` for why the flag, not the
 `WAYBILL_OFFLINE` env var, is the real egress control. `--offline` does not affect
 the registry pull.
 
-**Disk.** waybill writes its layer scratch and blob cache under the per-job work
-dir (`SCANNER_WAYBILL_WORK_DIR`), which the adapter deletes when the job ends and
+**Disk.** syft writes its layer scratch and blob cache under the per-job work
+dir (`SCANNER_SYFT_WORK_DIR`), which the adapter deletes when the job ends and
 sweeps at startup. That directory is the bound on a scan's disk use, so give it a
 sized mount: `emptyDir.sizeLimit` in K8s, `tmpfs: - /home/scanner:size=...` in
 compose. Note disk is not the binding constraint — memory is; see "Memory sizing"
-below, and `SCANNER_WAYBILL_MAX_IMAGE_SIZE`, which rejects an oversize artifact up
+below, and `SCANNER_SYFT_MAX_IMAGE_SIZE`, which rejects an oversize artifact up
 front rather than letting it fill the mount.
 
 ## Observing it
@@ -153,16 +153,16 @@ front rather than letting it fill the mount.
 Scrape `GET /metrics`. The series and their meaning are in the README; the two
 that answer most integration questions:
 
-- `harbor_scanner_waybill_scans_total{outcome="failure",category=...}` separates a
+- `harbor_scanner_syft_scans_total{outcome="failure",category=...}` separates a
   broken scanner from a broken registration. A `category` of `RegistryPullAuth` or
   `RegistryPullTransport` is a problem with the scanner registration or the
-  registry transport, not with waybill.
-- `harbor_scanner_waybill_queue_wait_seconds` against
-  `harbor_scanner_waybill_scan_duration_seconds`. If the wait rather than the
+  registry transport, not with syft.
+- `harbor_scanner_syft_queue_wait_seconds` against
+  `harbor_scanner_syft_scan_duration_seconds`. If the wait rather than the
   scan is what makes reports late, the worker pool is undersized: add replicas
   or raise `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` (see the memory sizing rule
   below first), not the scan timeout.
-- `harbor_scanner_waybill_scans_total{category="Expired"}` above zero is the hard
+- `harbor_scanner_syft_scans_total{category="Expired"}` above zero is the hard
   capacity signal: jobs are waiting longer than
   `SCANNER_STORE_REDIS_SCAN_JOB_TTL`, so their records expire before a worker
   reaches them and Harbor's poll 404s.
@@ -211,7 +211,7 @@ Measured on the devenv (arm64, one scan at a time, disk-backed work dir):
 | `nvidia/cuda:12.6.3-devel` | 3.7 GB | **4Gi** | **OOMKilled**, 500 | 3.68 GiB (ceiling) | 16s |
 | `nvidia/cuda:12.6.3-devel` | 3.7 GB | **7Gi** | **OOMKilled**, 500 | 6.94 GiB (ceiling) | 30s |
 
-waybill holds layer content in memory while pulling, so peak tracks image size at
+syft holds layer content in memory while pulling, so peak tracks image size at
 **~4.7x** the compressed bytes (4.49x for golang, 4.68x for node at its highest observed peak) and is not
 bounded by anything. The successful rows settle at a fixed peak whatever headroom
 they are given; the killed rows consume every byte available, which puts the cuda
@@ -221,7 +221,7 @@ Note `node:22` at 400 MB is an ordinary image, not a pathological one, and it
 OOM-kills a 2Gi container. Size the limit from the ratio, not from intuition:
 
 ```
-memory limit  >=  4.7  ×  SCANNER_WAYBILL_MAX_IMAGE_SIZE  ×  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY   (plus headroom)
+memory limit  >=  4.7  ×  SCANNER_SYFT_MAX_IMAGE_SIZE  ×  SCANNER_JOB_QUEUE_WORKER_CONCURRENCY   (plus headroom)
 ```
 
 The shipped deployment pairs a **512 MiB** cap with a **4Gi** limit: 512 MiB ×
@@ -232,7 +232,7 @@ wastes it.
 1. **`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` stays at `1`.** Raising it multiplies
    the requirement. Scale with replicas, which spread memory across pods.
 2. **The pre-pull size cap is what keeps an arbitrary image from OOM-killing the
-   pod.** `SCANNER_WAYBILL_MAX_IMAGE_SIZE` (default 512 MiB, `0` disables)
+   pod.** `SCANNER_SYFT_MAX_IMAGE_SIZE` (default 512 MiB, `0` disables)
    rejects an artifact whose compressed layers exceed it, before the pull
    allocates anything. Without it the kill lands on the container rather than on
    the one scan, so one oversized image takes every in-flight scan down with it.
@@ -244,15 +244,15 @@ wastes it.
    ```
    artifact core:8080/library/x@sha256:... is 3710564885 compressed bytes, over the
    536870912 limit; scanning it needs roughly 14842259540 bytes of memory
-   (raise SCANNER_WAYBILL_MAX_IMAGE_SIZE and the container memory limit together)
+   (raise SCANNER_SYFT_MAX_IMAGE_SIZE and the container memory limit together)
    ```
 
    The check reads the manifest only, not blobs. For a multi-platform index it
-   uses the largest single platform, since waybill pulls one. A probe that
+   uses the largest single platform, since syft pulls one. A probe that
    cannot answer does **not** block the scan: it reaches the same registry over
    the same credentials as the pull, so making every scan depend on it would
    trade a rare OOM for a common outage. Those gaps are counted in
-   `harbor_scanner_waybill_image_probe_failures_total` — alert on it, because a
+   `harbor_scanner_syft_image_probe_failures_total` — alert on it, because a
    silently unguarded scanner is worse than no guard.
 
 Also note a `tmpfs` work dir is RAM-backed and charged to the same limit. Use a

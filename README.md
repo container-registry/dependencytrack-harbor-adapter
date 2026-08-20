@@ -1,79 +1,135 @@
-# waybill-harbor-adapter
+# dependencytrack-harbor-adapter
 
-A [Harbor](https://goharbor.io) Pluggable Scanner Adapter that generates Software
-Bill of Materials (SBOM) documents for container images using
-[waybill](https://github.com/kusari-oss/waybill), the Kusari Rust SBOM CLI.
+A [Harbor](https://goharbor.io) Pluggable Scanner Adapter that keeps a
+[Dependency-Track](https://dependencytrack.org) portfolio in sync with what is
+actually in your registry.
 
-It implements the Harbor Scanner Adapter API v1 so Harbor can invoke it as a
-pluggable scanner. It advertises exactly one capability: `type: "sbom"`.
+For each artifact Harbor asks it to scan, the adapter produces an SBOM, hands the
+SPDX document back to Harbor, and uploads the same inventory to Dependency-Track
+as CycloneDX. It advertises exactly one capability: `type: "sbom"`.
 
 > [!WARNING]
-> waybill generates SBOMs only. It has **no vulnerability scanner**. This adapter
-> must **complement**, not replace, a vulnerability scanner (such as Trivy) in a
-> Harbor deployment. Registering it as the sole scanner leaves a project with no
-> vulnerability scanning at all.
+> This adapter generates SBOMs. It has **no vulnerability scanner** of its own.
+> It must **complement**, not replace, a vulnerability scanner (such as Trivy) in
+> a Harbor deployment. Registering it as a project's only scanner leaves that
+> project with no vulnerability scanning at all.
+>
+> That is by design. Dependency-Track does its own correlation: it mirrors NVD,
+> OSV, GitHub Advisories and EPSS and re-analyzes the whole portfolio daily. It
+> wants the component list, not a scanner's findings.
 
 ## How it works
 
-The adapter turns a Harbor scan request into one `waybill` invocation. waybill
-pulls the artifact from Harbor's registry itself and scans it in the same process:
-
 ```
-waybill --offline --timeout <n> sbom scan \
-  --image core:8080/library/alpine@sha256:... \
-  --image-src remote \
-  --format spdx-2.3-json --output spdx-2.3-json=<workdir>/report.spdx.json \
-  --insecure-registry core:8080 \
-  --no-oci-cache
+Harbor ──POST /api/v1/scan──▶ adapter
+                                │
+                                ├─1─ referrers lookup for an existing Harbor SBOM
+                                │     ├── hit  → fetch ~40 KB accessory, no image pull
+                                │     └── miss → syft pulls and scans the image
+                                │
+                                ├─2─ SPDX 2.3 ─────────▶ returned to Harbor
+                                └─3─ CycloneDX 1.6 ────▶ PUT /api/v1/bom (Dependency-Track)
 ```
 
-`--image-src remote` is pinned rather than defaulted: waybill's default order is
-`docker,podman,remote`, and the image ships no container runtime to probe.
+### The fast path
 
-Registry transport is derived from the scan request and configuration:
+Harbor stores an SBOM it generated as an OCI *accessory*: a referrer of the image
+with artifact type `application/vnd.goharbor.harbor.sbom.v1`. When one exists,
+this adapter reuses it instead of pulling the image, which turns a multi-gigabyte
+pull into a referrers call and a ~40 KB blob GET.
 
-| Situation | What the adapter passes |
+Two things about those accessories are not obvious and are load-bearing:
+
+- The accessory manifest carries **no top-level `artifactType`**. Harbor sets the
+  type as the manifest's `config.mediaType`, and registries synthesize
+  `artifactType` from it in referrers responses. So the value being filtered on
+  appears nowhere in the manifest itself.
+- The single layer is declared `application/vnd.oci.image.layer.v1.tar` but is
+  **not a tar**. It is the raw SBOM JSON. Untarring it fails.
+
+Both were confirmed against Harbor 2.16 by pulling an accessory and comparing it
+byte for byte with the same document served from Harbor's REST API.
+
+The fast path is an optimization, so every failure in it is non-fatal: no
+accessory, no referrers support, an unreadable blob, a lookup timeout, all fall
+back to generating. Watch `sbom_reused_total` against `sbom_generated_total` to
+see whether it is firing. A reuse share near zero usually means the projects
+never had SBOM generation enabled.
+
+### Why syft, and why CycloneDX 1.6
+
+syft emits SPDX 2.3 and CycloneDX 1.6 from a **single scan**, and converts
+between them offline for the fast path. One pull, both formats, no lossy
+round-trip through a third tool.
+
+The CycloneDX version is pinned, not defaulted. Dependency-Track validates every
+uploaded BOM against the CycloneDX schemas bundled in `cyclonedx-core-java`,
+which ship `bom-1.0` through `bom-1.6`. A 1.7 document, which several current
+SBOM tools emit by default, has no schema to validate against and is rejected
+with an RFC 9457 problem document. The pin is a compatibility contract.
+
+File cataloging is disabled (`SYFT_FILE_METADATA_SELECTION=none`). With it on,
+syft emits one CycloneDX component per file, none carrying a purl: on a small
+Alpine image that is 234 file components against 18 real packages, all of which
+Dependency-Track would store and render while being able to analyze none.
+
+### How artifacts map onto Dependency-Track projects
+
+Dependency-Track keys projects by **name and version**. Harbor gives the adapter
+a repository and a digest, and no tag. So:
+
+| Dependency-Track | Value |
 |---|---|
-| `registry.url` scheme is `http` | `--insecure-registry <host:port>` |
-| Registry behind a private CA | `--registry-ca-cert <path>` per `SCANNER_WAYBILL_REGISTRY_CA_CERTS` |
-| Self-signed dev/CI certs | `--insecure-tls-skip-verify` per `SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY` |
+| `projectName` | the Harbor repository, e.g. `library/alpine` |
+| `projectVersion` | the artifact digest |
+| `parentName` | the Harbor project (first path segment), unless disabled |
+| `isLatest` | always set: the newest artifact the adapter has seen wins |
+| `autoCreate` | always on |
 
-Credentials (Basic, decoded from the scan request; anonymous when the header is
-empty) are passed through the environment as
-`WAYBILL_REGISTRY_<HOST>_USERNAME`/`_PASSWORD`, never through argv — argv is
-readable by anything that can stat `/proc/<pid>/cmdline`.
-
-Enrichment network calls (deps.dev, ClearlyDefined) are disabled with the
-`--offline` CLI flag; the env var alone does not disable them (see
-`docs/spike-m1.md`). `--offline` does not affect the registry pull.
-
-Earlier revisions pulled the artifact themselves with go-containerregistry and
-handed waybill a docker-save tarball, because waybill's OCI client hardcoded
-`https://` and trusted only webpki roots. waybill milestone 182 fixed both; see
-`docs/upstream-issues.md`.
+One project version per image build is unbounded growth over time, and it is
+deliberate: the digest is the only identity Harbor actually supplies, and
+inventing a stable one from a mutable tag would silently overwrite the history of
+what was deployed.
 
 ## Configuration
 
-All configuration is environment variables. The scanner-facing ones:
+All configuration is environment variables.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SCANNER_WAYBILL_BINARY` | `/usr/local/bin/waybill` | waybill CLI path |
-| `SCANNER_WAYBILL_WORK_DIR` | `/home/scanner/work` | Per-job scratch root; must be writable and sized |
-| `SCANNER_WAYBILL_TIMEOUT` | `5m0s` | Per-scan timeout; also derives the job lock TTL. Must be positive |
-| `SCANNER_WAYBILL_REGISTRY_CA_CERTS` | — | Comma-separated PEM bundles trusted for the registry pull |
-| `SCANNER_WAYBILL_INSECURE_TLS_SKIP_VERIFY` | `false` | Disable TLS verification for pulls (dev/CI only) |
-| `SCANNER_WAYBILL_ENRICHMENT` | `false` | Drop `--offline`, allowing deps.dev / ClearlyDefined egress |
-| `SCANNER_WAYBILL_IMAGE_PLATFORM` | — | Override the platform resolved from a multi-arch index |
-| `SCANNER_WAYBILL_OCI_CACHE_SIZE` | `0` | Blob-cache cap in bytes; `0` passes `--no-oci-cache` |
-| `SCANNER_WAYBILL_EXTRA_ARGS` | — | Space-separated extra waybill flags |
-| `SCANNER_WAYBILL_MAX_IMAGE_SIZE` | `536870912` (512 MiB) | Reject artifacts larger than this, before the pull. `0` disables. Memory guard, see below |
+| `SCANNER_DTRACK_URL` | — | Dependency-Track API root. Empty disables uploads (warns at startup) |
+| `SCANNER_DTRACK_API_KEY` | — | Team API key with `BOM_UPLOAD` **and** `PROJECT_CREATION_UPLOAD` |
+| `SCANNER_DTRACK_TIMEOUT` | `60s` | Per-upload timeout |
+| `SCANNER_DTRACK_PROJECT_TAGS` | `harbor` | Tags applied to projects this adapter creates |
+| `SCANNER_DTRACK_NEST_UNDER_HARBOR_PROJECT` | `true` | File repositories under a parent named for the Harbor project |
+| `SCANNER_DTRACK_FAIL_SCAN_ON_UPLOAD_ERROR` | `false` | Whether a failed upload fails the Harbor scan |
+| `SCANNER_DTRACK_INSECURE_TLS_SKIP_VERIFY` | `false` | Dev/CI only |
+| `SCANNER_SYFT_BINARY` | `/usr/local/bin/syft` | syft CLI path |
+| `SCANNER_SYFT_WORK_DIR` | `/home/scanner/work` | Per-job scratch root; must be writable |
+| `SCANNER_SYFT_TIMEOUT` | `5m0s` | Per-scan timeout; also derives the job lock TTL. Must be positive |
+| `SCANNER_SYFT_REGISTRY_CA_CERT` | — | PEM bundle trusted for the registry pull |
+| `SCANNER_SYFT_INSECURE_TLS_SKIP_VERIFY` | `false` | Dev/CI only |
+| `SCANNER_SYFT_IMAGE_PLATFORM` | — | Override the platform resolved from a multi-arch index |
+| `SCANNER_SYFT_EXTRA_ARGS` | — | Space-separated extra syft flags |
+| `SCANNER_SYFT_MAX_IMAGE_SIZE` | `1073741824` (1 GiB) | Reject artifacts larger than this before the pull. `0` disables. Memory guard, see below |
 
 Plus `SCANNER_API_SERVER_*` (listener and TLS), `SCANNER_API_AUTH_API_KEY`,
 `SCANNER_STORE_BACKEND` (`redis` or `memory`), `SCANNER_STORE_REDIS_*`,
 `SCANNER_JOB_QUEUE_REDIS_*`, `SCANNER_REDIS_*` and `SCANNER_LOG_LEVEL`. See
 `pkg/etc/config.go`; unusable combinations are rejected at startup rather than at
-scan time.
+scan time. `SCANNER_DTRACK_URL` and `SCANNER_DTRACK_API_KEY` must be set together.
+
+### What a failed upload does
+
+By default, nothing to the scan. The SBOM is Harbor's deliverable and it is
+already generated; discarding it because a third system was briefly unreachable
+would make the adapter strictly less useful than one without the integration. The
+failure is logged and counted in `bom_upload_failures_total`.
+
+The cost of that default is that **Harbor looks entirely healthy while the
+Dependency-Track portfolio silently stops being updated**, so that counter is the
+one to alert on. Set `SCANNER_DTRACK_FAIL_SCAN_ON_UPLOAD_ERROR=true` where a
+visible failed scan is preferable to a silent gap.
 
 ## Metrics
 
@@ -82,50 +138,45 @@ default on). Alongside the Go runtime defaults:
 
 | Metric | Type | Notes |
 |---|---|---|
-| `harbor_scanner_waybill_scans_total` | counter | Labels `outcome` (`success`/`failure`) and `category` |
-| `harbor_scanner_waybill_scan_duration_seconds` | histogram | Label `outcome`; buckets reach 1800s |
-| `harbor_scanner_waybill_queue_wait_seconds` | histogram | Enqueue to pickup |
-| `harbor_scanner_waybill_queue_depth` | gauge | Jobs waiting; `NaN` when the queue cannot be read |
-| `harbor_scanner_waybill_scans_in_flight` | gauge | Scans executing in this process |
-| `harbor_scanner_waybill_enqueued_total` | counter | Jobs accepted |
-| `harbor_scanner_waybill_enqueue_failures_total` | counter | Requests that could not be queued |
-| `harbor_scanner_waybill_report_stored_bytes` | histogram | Stored (compressed) envelope size |
-| `harbor_scanner_waybill_image_compressed_bytes` | histogram | Artifact size as read from its manifest |
-| `harbor_scanner_waybill_image_probe_failures_total` | counter | Size checks that failed; those scans ran unguarded |
+| `harbor_scanner_dependencytrack_scans_total` | counter | Labels `outcome` (`success`/`failure`) and `category` |
+| `harbor_scanner_dependencytrack_scan_duration_seconds` | histogram | Label `outcome`; buckets reach 1800s |
+| `harbor_scanner_dependencytrack_sbom_reused_total` | counter | Scans served from an existing Harbor SBOM, no image pull |
+| `harbor_scanner_dependencytrack_sbom_generated_total` | counter | Scans that pulled the image |
+| `harbor_scanner_dependencytrack_accessory_fetch_failures_total` | counter | Fast-path lookups that errored (a miss is not counted) |
+| `harbor_scanner_dependencytrack_bom_uploads_total` | counter | BOMs accepted by Dependency-Track |
+| `harbor_scanner_dependencytrack_bom_upload_failures_total` | counter | BOMs rejected or never delivered |
+| `harbor_scanner_dependencytrack_queue_wait_seconds` | histogram | Enqueue to pickup |
+| `harbor_scanner_dependencytrack_queue_depth` | gauge | Jobs waiting; `NaN` when the queue cannot be read |
+| `harbor_scanner_dependencytrack_scans_in_flight` | gauge | Scans executing in this process |
+| `harbor_scanner_dependencytrack_enqueued_total` | counter | Jobs accepted |
+| `harbor_scanner_dependencytrack_enqueue_failures_total` | counter | Requests that could not be queued |
+| `harbor_scanner_dependencytrack_report_stored_bytes` | histogram | Stored (compressed) envelope size |
+| `harbor_scanner_dependencytrack_image_compressed_bytes` | histogram | Artifact size as read from its manifest |
+| `harbor_scanner_dependencytrack_image_probe_failures_total` | counter | Size checks that failed; those scans ran unguarded |
 
-`category` is the `waybill.ErrorCategory` of the failure, which is the label that
+`category` is the `syft.ErrorCategory` of the failure, which is the label that
 separates a broken scanner from a misconfigured registration:
-`RegistryPullAuth` (credentials rejected), `RegistryPullTransport` (TLS or scheme),
-`RegistryPull`, `Timeout`, `WaybillExec`, plus `Adapter` for failures the adapter
-raised itself, `Expired` for a job that waited longer than
+`RegistryPullAuth` (credentials rejected), `RegistryPullTransport` (TLS or
+scheme), `RegistryPull`, `Timeout`, `SyftExec`, plus `Adapter` for failures the
+adapter raised itself, `Expired` for a job that waited longer than
 `SCANNER_STORE_REDIS_SCAN_JOB_TTL`, and `ImageTooLarge` for one refused by the
 pre-pull size cap.
 
-**Memory is the binding constraint.** waybill holds layer content in memory while
-pulling, so peak RSS runs at ~4.7x the compressed image size and nothing else
-bounds it: `golang:1.24` (316 MB) peaks at 1.32 GiB, `node:22` (400 MB) at
-1.75 GiB and OOM-kills a 2Gi container, and a 3.7 GB image is OOM-killed even at
-7Gi. Because the kill lands on the container, one oversized artifact takes every
-in-flight scan with it.
+**Memory is the binding constraint on the generation path.** Pulling and
+cataloging an image holds layer content in memory, and an OOM kills the
+container rather than the job, so one oversized artifact takes every in-flight
+scan with it. `SCANNER_SYFT_MAX_IMAGE_SIZE` prevents that, but only in step with
+the container memory limit — raising the cap alone just moves the OOM back one
+artifact. This is also why `SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` defaults to
+`1`: scale with replicas, since concurrency multiplies peak memory.
 
-`SCANNER_WAYBILL_MAX_IMAGE_SIZE` prevents that, but only in step with the
-container memory limit:
+The fast path does not pull anything, so it is not subject to this at all. The
+more of your traffic it serves, the less this section matters.
 
-```
-memory limit  >=  4.7 × SCANNER_WAYBILL_MAX_IMAGE_SIZE × SCANNER_JOB_QUEUE_WORKER_CONCURRENCY
-```
-
-The 512 MiB default is paired with the 4Gi limit the shipped deployment sets.
-Raising the cap alone just moves the OOM back one artifact. This is also why
-`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` defaults to `1` — scale with replicas.
-Full measurements are in `docs/INTEGRATION.md`.
-
-Worth alerting on: any `category="Expired"` (jobs are aging out of the store
-before a worker reaches them), and a rising `queue_wait_seconds` (the worker pool
-is too small for the rate Harbor dispatches at). See `docs/INTEGRATION.md` for the
-TTL invariant and the memory sizing rule — raising
-`SCANNER_JOB_QUEUE_WORKER_CONCURRENCY` multiplies peak memory, so replicas are
-usually the right answer.
+Worth alerting on: `bom_upload_failures_total` (see above), any
+`category="Expired"` (jobs aging out of the store before a worker reaches them),
+and a rising `queue_wait_seconds` (the worker pool is too small for the rate
+Harbor dispatches at).
 
 `/metrics` is served outside the `/api/v1` prefix, so `SCANNER_API_AUTH_API_KEY`
 does not protect it. Keep it off the ingress.
@@ -143,10 +194,19 @@ task dev:up       # local harness: redis + adapter over one compose network
 task info         # print version and tool pins
 ```
 
-Version pins (waybill image, base image, and dev tooling) live in `versions.env`,
-the single source of truth loaded by the Taskfile and CI.
+Version pins (syft CLI, base image, and dev tooling) live in `versions.env`, the
+single source of truth loaded by the Taskfile and CI.
+
+## Relationship to waybill-harbor-adapter
+
+This is a hard fork of
+[waybill-harbor-adapter](https://github.com/container-registry/waybill-harbor-adapter),
+which shares its Harbor API v1 implementation, job queue, Redis store, metrics
+and memory guard. What is new here is the accessory fast path (`pkg/accessory`),
+the Dependency-Track client (`pkg/dtrack`), and a syft wrapper that emits both
+formats from one scan (`pkg/syft`).
 
 ## License
 
-Apache-2.0 (see [LICENSE](LICENSE)). The container image bundles the waybill
-binary under Apache-2.0; see [NOTICE](NOTICE).
+Apache-2.0 (see [LICENSE](LICENSE)). The container image bundles the syft binary
+under Apache-2.0; see [NOTICE](NOTICE).

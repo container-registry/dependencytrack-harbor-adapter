@@ -16,17 +16,17 @@ func TestGetConfigDefaults(t *testing.T) {
 	cfg, err := GetConfig()
 	require.NoError(t, err)
 	assert.Equal(t, ":8080", cfg.API.Addr)
-	assert.Equal(t, "/usr/local/bin/waybill", cfg.Waybill.Binary)
-	assert.Equal(t, "/home/scanner/work", cfg.Waybill.WorkDir)
-	assert.Equal(t, 5*time.Minute, cfg.Waybill.Timeout)
-	assert.False(t, cfg.Waybill.Enrichment)
-	assert.Equal(t, "harbor.scanner.waybill:data-store", cfg.RedisStore.Namespace)
-	assert.Equal(t, "harbor.scanner.waybill:job-queue", cfg.JobQueue.Namespace)
+	assert.Equal(t, "/usr/local/bin/syft", cfg.Syft.Binary)
+	assert.Equal(t, "/home/scanner/work", cfg.Syft.WorkDir)
+	assert.Equal(t, 5*time.Minute, cfg.Syft.Timeout)
+	assert.Equal(t, 60*time.Second, cfg.DTrack.Timeout)
+	assert.Equal(t, "harbor.scanner.dependencytrack:data-store", cfg.RedisStore.Namespace)
+	assert.Equal(t, "harbor.scanner.dependencytrack:job-queue", cfg.JobQueue.Namespace)
 	assert.Equal(t, "redis", cfg.Store.Backend)
 }
 
 func TestLockTTLDerivedFromTimeout(t *testing.T) {
-	t.Setenv("SCANNER_WAYBILL_TIMEOUT", "2m")
+	t.Setenv("SCANNER_SYFT_TIMEOUT", "2m")
 	cfg, err := GetConfig()
 	require.NoError(t, err)
 	// Not a copied 5m constant: TTL tracks the configured scan timeout + backstop.
@@ -48,20 +48,20 @@ func TestCheck_OK(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := GetConfig()
 	require.NoError(t, err)
-	cfg.Waybill.WorkDir = filepath.Join(dir, "work")
+	cfg.Syft.WorkDir = filepath.Join(dir, "work")
 	cfg.Store.Backend = "redis"
 
-	err = Check(context.Background(), cfg, fakeVersioner{v: "0.1.0-alpha.55"}, fakePinger{})
+	err = Check(context.Background(), cfg, fakeVersioner{v: "0.1.0-alpha.55"}, fakePinger{}, nil)
 	require.NoError(t, err)
 }
 
-func TestCheck_WaybillNotExecable(t *testing.T) {
+func TestCheck_SyftNotExecable(t *testing.T) {
 	cfg, err := GetConfig()
 	require.NoError(t, err)
-	cfg.Waybill.WorkDir = t.TempDir()
+	cfg.Syft.WorkDir = t.TempDir()
 	cfg.Store.Backend = "memory"
 
-	err = Check(context.Background(), cfg, fakeVersioner{err: errors.New("no such file")}, nil)
+	err = Check(context.Background(), cfg, fakeVersioner{err: errors.New("no such file")}, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not exec-able")
 }
@@ -69,10 +69,10 @@ func TestCheck_WaybillNotExecable(t *testing.T) {
 func TestCheck_RedisUnreachable(t *testing.T) {
 	cfg, err := GetConfig()
 	require.NoError(t, err)
-	cfg.Waybill.WorkDir = t.TempDir()
+	cfg.Syft.WorkDir = t.TempDir()
 	cfg.Store.Backend = "redis"
 
-	err = Check(context.Background(), cfg, fakeVersioner{v: "v"}, fakePinger{err: errors.New("connection refused")})
+	err = Check(context.Background(), cfg, fakeVersioner{v: "v"}, fakePinger{err: errors.New("connection refused")}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "redis not reachable")
 }

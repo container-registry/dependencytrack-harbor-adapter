@@ -1,7 +1,7 @@
 # Adapter overlay for the Harbor devenv e2e (plan M7).
 #
 # The adapter joins the devenv's compose network as an external network so Harbor
-# core can reach http://waybill-adapter:8080 for the registration ping and the
+# core can reach http://dependencytrack-adapter:8080 for the registration ping and the
 # jobservice can poll the report endpoint, and the adapter can reach
 # http://core:8080 and redis:6379 in the same network. Docker Desktop cannot dial
 # host-published ports from inside a container, so the shared network is mandatory.
@@ -12,19 +12,19 @@
 #
 # The image is built out-of-band by run-e2e.sh (task image), NOT via a compose
 # build: the Dockerfile COPYs host-staged binaries out of bin/linux-<arch>/, which
-# `task image` populates via build / build:lprobe / build:waybill.
+# `task image` populates via build / build:lprobe / build:syft.
 services:
-  waybill-adapter:
-    image: ${ADAPTER_IMAGE:-waybill-harbor-adapter:e2e}
+  dependencytrack-adapter:
+    image: ${ADAPTER_IMAGE:-dependencytrack-harbor-adapter:e2e}
     environment:
       SCANNER_LOG_LEVEL: debug
       SCANNER_API_SERVER_ADDR: ":8080"
       # Only SCANNER_REDIS_URL (the adapter has no legacy per-subsystem URL vars).
       SCANNER_REDIS_URL: redis://redis:6379
       # Redis namespaces set explicitly (do not rely on defaults in a deployment).
-      SCANNER_STORE_REDIS_NAMESPACE: harbor.scanner.waybill:data-store
-      SCANNER_JOB_QUEUE_REDIS_NAMESPACE: harbor.scanner.waybill:job-queue
-      SCANNER_WAYBILL_WORK_DIR: /home/scanner/work
+      SCANNER_STORE_REDIS_NAMESPACE: harbor.scanner.dependencytrack:data-store
+      SCANNER_JOB_QUEUE_REDIS_NAMESPACE: harbor.scanner.dependencytrack:job-queue
+      SCANNER_SYFT_WORK_DIR: /home/scanner/work
     read_only: true
     # tmpfs at /home/scanner: HOME and the per-job work dir live here over a
     # read-only root FS. mode 1777 lets uid 65532 create the work/ subdir.

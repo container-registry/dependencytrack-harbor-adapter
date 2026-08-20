@@ -37,7 +37,7 @@
       "datasourceTemplate": "docker"
     },
     {
-      "description": "versions.env: single-value tool and binary pins (including WAYBILL_CLI_VERSION -- do not add a second manager for it, both would extract the same dep)",
+      "description": "versions.env: single-value tool and binary pins (including SYFT_CLI_VERSION -- do not add a second manager for it, both would extract the same dep)",
       "customType": "regex",
       "managerFilePatterns": [
         "/^versions\\.env$/"
@@ -49,20 +49,20 @@
   ],
   "packageRules": [
     {
-      "description": "A waybill pin bump is a runtime behavior change; release it as a patch (fix). Matches the github-releases datasource the versions.env custom manager emits -- the pin is a release tarball, not the (private) GHCR package.",
+      "description": "A syft pin bump is a runtime behavior change; release it as a patch (fix). Matches the github-releases datasource the versions.env custom manager emits -- the pin is a release tarball.",
       "matchDatasources": [
         "github-releases"
       ],
       "matchPackageNames": [
-        "kusari-oss/waybill"
+        "anchore/syft"
       ],
       "semanticCommitType": "fix",
-      "commitMessageTopic": "waybill",
+      "commitMessageTopic": "syft",
       "addLabels": [
-        "waybill"
+        "syft"
       ],
       "prBodyNotes": [
-        "\u26a0\ufe0f `WAYBILL_CLI_SHA256_LINUX_*` in `versions.env` are **not** updated by this PR. Run `task waybill:checksums` and commit the result, or every `task build:waybill` will fail checksum verification."
+        "\u26a0\ufe0f `SYFT_CLI_SHA256_LINUX_*` in `versions.env` are **not** updated by this PR. Run `task syft:checksums` and commit the result, or every `task build:syft` will fail checksum verification."
       ]
     },
     {

@@ -1,4 +1,4 @@
-module github.com/container-registry/waybill-harbor-adapter
+module github.com/container-registry/dependencytrack-harbor-adapter
 
 go 1.26
 

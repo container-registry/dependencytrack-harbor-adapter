@@ -1,5 +1,5 @@
 {
-  "name": "waybill-harbor-adapter-workflow-deps",
+  "name": "dependencytrack-harbor-adapter-workflow-deps",
   "private": true,
   "description": "Pinned dependency for .github/scripts/apply-settings.js. Not part of the adapter; the repo ships no JavaScript.",
   "license": "Apache-2.0",

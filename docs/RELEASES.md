@@ -1,4 +1,4 @@
-# Releasing waybill-harbor-adapter
+# Releasing dependencytrack-harbor-adapter
 
 Releases are automated with [release-please](https://github.com/googleapis/release-please).
 A merge to `main` updates (or opens) a release PR; merging that release PR tags the

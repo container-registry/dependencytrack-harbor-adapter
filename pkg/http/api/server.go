@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
 )
 
 type Server struct {

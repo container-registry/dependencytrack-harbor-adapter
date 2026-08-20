@@ -5,9 +5,9 @@
 bin/
 dist/
 coverage.txt
-# Stray root-level binary from an ad-hoc `go build ./cmd/scanner-waybill`
+# Stray root-level binary from an ad-hoc `go build ./cmd/scanner-dependencytrack`
 # (the Taskfile always builds into bin/).
-/scanner-waybill
+/scanner-dependencytrack
 
 # Task fingerprint cache
 .task/

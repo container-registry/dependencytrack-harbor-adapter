@@ -10,11 +10,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/harbor"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/imageprobe"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/job"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/metrics"
-	"github.com/container-registry/waybill-harbor-adapter/pkg/persistence/memory"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/harbor"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/imageprobe"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/job"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/metrics"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/persistence/memory"
 )
 
 type fakeProber struct {
@@ -36,7 +36,7 @@ func cappedController(t *testing.T, prober imageprobe.Prober, limit int64) (*fak
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
 	w := &fakeWrapper{sbom: json.RawMessage(`{"spdxVersion":"SPDX-2.3"}`)}
-	return w, NewControllerWithSizeCap(store, w, harbor.Scanner{}, t.TempDir(), prober, limit), key
+	return w, NewController(store, w, harbor.Scanner{}, t.TempDir(), Options{Prober: prober, MaxImageSize: limit}), key
 }
 
 func cappedRequest() *harbor.ScanRequest {
@@ -63,8 +63,8 @@ func TestOversizeArtifactFailsTheJobWithAnActionableError(t *testing.T) {
 	store := memory.NewStore()
 	key := newJobKey()
 	require.NoError(t, store.Create(context.Background(), job.ScanJob{Key: key, Status: job.Queued}))
-	c := NewControllerWithSizeCap(store, &fakeWrapper{}, harbor.Scanner{}, t.TempDir(),
-		&fakeProber{size: 3_700_000_000}, 536_870_912)
+	c := NewController(store, &fakeWrapper{}, harbor.Scanner{}, t.TempDir(),
+		Options{Prober: &fakeProber{size: 3_700_000_000}, MaxImageSize: 536_870_912})
 
 	require.NoError(t, c.Scan(context.Background(), key, cappedRequest()))
 
@@ -76,7 +76,7 @@ func TestOversizeArtifactFailsTheJobWithAnActionableError(t *testing.T) {
 	// reverse-engineer the limit from a bare "too large".
 	assert.Contains(t, got.Error, "3700000000")
 	assert.Contains(t, got.Error, "536870912")
-	assert.Contains(t, got.Error, "SCANNER_WAYBILL_MAX_IMAGE_SIZE")
+	assert.Contains(t, got.Error, "SCANNER_SYFT_MAX_IMAGE_SIZE")
 }
 
 func TestOversizeArtifactIsCountedAsARefusalNotAFault(t *testing.T) {

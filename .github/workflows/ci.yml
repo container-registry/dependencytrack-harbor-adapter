@@ -1,7 +1,7 @@
 # CI gates for pull requests and pushes to main, plus a weekly vuln-check sweep.
 #
-# The component job builds the REAL adapter image (which bundles the real waybill
-# binary) and runs `task test:component` against it. waybill is fetched from its
+# The component job builds the REAL adapter image (which bundles the real syft
+# binary) and runs `task test:component` against it. syft is fetched from its
 # public, checksum-verified release tarball, so no registry credentials are needed.
 ---
 name: CI
@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      # No registry login: `task build:waybill` fetches the waybill CLI from its
+      # No registry login: `task build:syft` fetches the syft CLI from its
       # public, checksum-verified release tarball (versions.env).
       - name: Run component tests against the real adapter image
         run: task test:component

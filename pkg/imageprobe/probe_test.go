@@ -22,7 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/container-registry/waybill-harbor-adapter/pkg/etc"
+	"github.com/container-registry/dependencytrack-harbor-adapter/pkg/etc"
 )
 
 // testRegistry serves a real OCI registry over plain HTTP, so the probe is
@@ -55,7 +55,7 @@ func push(t *testing.T, host, repo string, taggable remote.Taggable) string {
 
 func newProber(t *testing.T, platform string) Prober {
 	t.Helper()
-	p, err := New(etc.Waybill{ImagePlatform: platform})
+	p, err := New(etc.Syft{Platform: platform})
 	require.NoError(t, err)
 	return p
 }
@@ -109,7 +109,7 @@ func TestNestedIndexIsMeasuredNotSkipped(t *testing.T) {
 }
 
 // TestIndexChargesTheConfiguredPlatform pins that the probe measures what
-// waybill will actually pull. Charging the largest child regardless would refuse
+// syft will actually pull. Charging the largest child regardless would refuse
 // a scan whose selected platform sits comfortably under the cap.
 func TestIndexChargesTheConfiguredPlatform(t *testing.T) {
 	host := testRegistry(t)

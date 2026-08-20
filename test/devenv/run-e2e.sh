@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test of the waybill adapter against a live Harbor devenv (plan M7).
+# End-to-end test of the syft adapter against a live Harbor devenv (plan M7).
 #
 # Prereq: the harbor devenv is up (cd ../harbor && task dev:up SKIP_TRIVY=true, or
 # the dev:infra:up + airfix-override path if core crash-loops). This script builds
@@ -12,7 +12,7 @@
 #   REG                  registry host:port for crane push     (default localhost:8080)
 #   AUTH                 admin creds                           (default admin:Harbor12345)
 #   HARBOR_NETWORK       external devenv network               (default harbor-0_default)
-#   ADAPTER_IMAGE        adapter image tag                     (default waybill-harbor-adapter:e2e)
+#   ADAPTER_IMAGE        adapter image tag                     (default dependencytrack-harbor-adapter:e2e)
 #   SINGLE_ARCH          arch for the single-manifest fixture  (default amd64)
 #   SKIP_BUILD           set to 1 to reuse an existing image
 set -euo pipefail
@@ -21,10 +21,10 @@ H="${H:-http://localhost:8080}"
 REG="${REG:-localhost:8080}"
 AUTH="${AUTH:-admin:Harbor12345}"
 HARBOR_NETWORK="${HARBOR_NETWORK:-harbor-0_default}"
-ADAPTER_IMAGE="${ADAPTER_IMAGE:-waybill-harbor-adapter:e2e}"
+ADAPTER_IMAGE="${ADAPTER_IMAGE:-dependencytrack-harbor-adapter:e2e}"
 SINGLE_ARCH="${SINGLE_ARCH:-amd64}"
 PROJECT="library"
-REPO="waybill-e2e"
+REPO="syft-e2e"
 SRC="alpine:3.20"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,7 +37,7 @@ fail() { printf '\nFAIL: %s\n' "$*" >&2; dump_diagnostics; exit 1; }
 
 dump_diagnostics() {
   log "DIAGNOSTICS: adapter logs"
-  ${COMPOSE} logs --no-color --tail=200 waybill-adapter 2>&1 || true
+  ${COMPOSE} logs --no-color --tail=200 dependencytrack-adapter 2>&1 || true
   log "DIAGNOSTICS: jobservice logs"
   docker logs --tail=120 harbor-0-jobservice-1 2>&1 || true
   if [ -n "${LAST_DGST:-}" ] && [ -n "${LAST_REPORT_ID:-}" ]; then
@@ -56,7 +56,7 @@ echo
 docker network inspect "$HARBOR_NETWORK" >/dev/null 2>&1 || fail "network $HARBOR_NETWORK not found (check SLOT: docker network ls | grep harbor)"
 
 # ---------------------------------------------------------------------------
-# 1. Build the adapter image (task image stages waybill from its release tarball).
+# 1. Build the adapter image (task image stages syft from its release tarball).
 # ---------------------------------------------------------------------------
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   log "Building adapter image ${ADAPTER_IMAGE}"
@@ -85,15 +85,15 @@ echo "$META" | jq -e '.capabilities[0].type=="sbom"' >/dev/null \
 # 3. Register the adapter + assert SBOM-only capabilities, then bind project.
 # ---------------------------------------------------------------------------
 log "Registering scanner (idempotent)"
-UUID=$(curl -fsS -u "$AUTH" "$H/api/v2.0/scanners?q=name%3Dwaybill" | jq -r '.[0].uuid // empty')
+UUID=$(curl -fsS -u "$AUTH" "$H/api/v2.0/scanners?q=name%3Dsyft" | jq -r '.[0].uuid // empty')
 if [ -z "$UUID" ]; then
   curl -fsS -u "$AUTH" -X POST "$H/api/v2.0/scanners" -H 'Content-Type: application/json' -d '{
-    "name":"waybill","description":"waybill SBOM adapter (e2e)",
-    "url":"http://waybill-adapter:8080","disabled":false,"skip_certVerify":true}' \
-    || fail "scanner registration failed (Harbor could not reach http://waybill-adapter:8080?)"
-  UUID=$(curl -fsS -u "$AUTH" "$H/api/v2.0/scanners?q=name%3Dwaybill" | jq -r '.[0].uuid // empty')
+    "name":"syft","description":"syft SBOM adapter (e2e)",
+    "url":"http://dependencytrack-adapter:8080","disabled":false,"skip_certVerify":true}' \
+    || fail "scanner registration failed (Harbor could not reach http://dependencytrack-adapter:8080?)"
+  UUID=$(curl -fsS -u "$AUTH" "$H/api/v2.0/scanners?q=name%3Dsyft" | jq -r '.[0].uuid // empty')
 else
-  echo "scanner 'waybill' already registered, reusing"
+  echo "scanner 'syft' already registered, reusing"
 fi
 [ -n "$UUID" ] && [ "$UUID" != "null" ] || fail "could not resolve scanner uuid"
 echo "scanner uuid: $UUID"
@@ -118,7 +118,7 @@ echo "$CAPS" | jq -e '.capabilities.support_sbom==true' >/dev/null \
 echo "$CAPS" | jq -e '.capabilities | has("support_vulnerability") | not' >/dev/null \
   || fail "capabilities.support_vulnerability must be absent for an sbom-only scanner"
 
-log "Binding project ${PROJECT} to the waybill scanner"
+log "Binding project ${PROJECT} to the syft scanner"
 curl -fsS -u "$AUTH" -X PUT "$H/api/v2.0/projects/$PROJECT/scanner" \
   -H 'Content-Type: application/json' -d "{\"uuid\":\"$UUID\"}" \
   || fail "project scanner binding failed"
