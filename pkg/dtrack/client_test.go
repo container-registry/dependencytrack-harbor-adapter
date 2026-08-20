@@ -141,3 +141,70 @@ func TestBaseURLTrailingSlashIsNormalized(t *testing.T) {
 	require.NoError(t, client.Ping(context.Background()))
 	assert.Equal(t, "/api/v1/team/self", path)
 }
+
+// autoCreate creates the project but not its parent, so an upload naming a
+// parent that does not exist is rejected outright. Losing the whole inventory
+// over a presentational detail is the wrong trade, and widening the API key to
+// PORTFOLIO_MANAGEMENT_CREATE just to create a folder is worse.
+func TestUploadRetriesWithoutAMissingParent(t *testing.T) {
+	var bodies []bomSubmitRequest
+
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var req bomSubmitRequest
+		body, _ := io.ReadAll(r.Body)
+		require.NoError(t, json.Unmarshal(body, &req))
+		bodies = append(bodies, req)
+
+		if req.ParentName != "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("The parent project could not be found."))
+			return
+		}
+		_, _ = w.Write([]byte(`{"token":"tok-2"}`))
+	})
+
+	err := client.Upload(context.Background(), UploadRequest{
+		ProjectName: "library/alpine", ProjectVersion: "sha256:deadbeef",
+		ParentName: "library", CycloneDX: json.RawMessage(`{}`),
+	})
+	require.NoError(t, err, "a missing parent must not lose the BOM")
+
+	require.Len(t, bodies, 2, "expected one attempt with the parent and one without")
+	assert.Equal(t, "library", bodies[0].ParentName)
+	assert.Empty(t, bodies[1].ParentName)
+	assert.Equal(t, "library/alpine", bodies[1].ProjectName, "the retry must carry the same project")
+}
+
+// Only the missing-parent 404 is recoverable. Retrying a schema rejection would
+// send the same invalid document twice and report a failure with the wrong cause.
+func TestUploadDoesNotRetryOtherFailures(t *testing.T) {
+	attempts := 0
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"detail":"$.specVersion: does not have a value in the enumeration"}`))
+	})
+
+	err := client.Upload(context.Background(), UploadRequest{
+		ProjectName: "p", ProjectVersion: "v", ParentName: "parent",
+		CycloneDX: json.RawMessage(`{}`),
+	})
+	require.Error(t, err)
+	assert.Equal(t, 1, attempts, "a schema rejection must not be retried")
+}
+
+// Without a parent there is nothing to fall back to, so a 404 is just a failure.
+func TestUploadWithoutAParentDoesNotRetry(t *testing.T) {
+	attempts := 0
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("The parent project could not be found."))
+	})
+
+	err := client.Upload(context.Background(), UploadRequest{
+		ProjectName: "p", ProjectVersion: "v", CycloneDX: json.RawMessage(`{}`),
+	})
+	require.Error(t, err)
+	assert.Equal(t, 1, attempts)
+}

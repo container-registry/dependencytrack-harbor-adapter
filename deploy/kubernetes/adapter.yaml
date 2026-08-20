@@ -1,0 +1,131 @@
+# Dependency-Track Harbor scanner adapter.
+#
+# Namespace: this MUST run in the same namespace as the Harbor it serves. Harbor
+# puts its own registry URL in every scan request as a bare service name
+# (http://harbor-harbor-next-registry:5000), which only resolves inside that
+# namespace. A cross-namespace deployment fails every pull with "no such host".
+apiVersion: v1
+kind: Service
+metadata:
+  name: dependencytrack-adapter
+  namespace: 8gcr-dev-main
+  labels:
+    app.kubernetes.io/name: dependencytrack-adapter
+    app.kubernetes.io/component: scanner
+    app.kubernetes.io/part-of: harbor
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: dependencytrack-adapter
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dependencytrack-adapter
+  namespace: 8gcr-dev-main
+  labels:
+    app.kubernetes.io/name: dependencytrack-adapter
+    app.kubernetes.io/component: scanner
+    app.kubernetes.io/part-of: harbor
+spec:
+  # One replica, deliberately. Scan jobs and reports live in Redis so replicas
+  # would share state correctly, but the generation path's peak memory scales
+  # with concurrency; add replicas rather than worker concurrency.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dependencytrack-adapter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dependencytrack-adapter
+        app.kubernetes.io/component: scanner
+        app.kubernetes.io/part-of: harbor
+    spec:
+      securityContext:
+        # The image's work dir is owned by uid 65532, and an emptyDir mounted
+        # over it does NOT inherit that ownership. Without this fsGroup the
+        # adapter cannot write its per-job scratch dirs and fails at startup.
+        fsGroup: 65532
+      containers:
+        - name: scanner
+          image: 8gcr.container-registry.dev/library/dependencytrack-harbor-adapter:dev
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # Numeric, not inherited from the image. The distroless base sets
+            # USER to the NAME "nonroot", and the kubelet cannot verify a
+            # non-numeric user against runAsNonRoot: it refuses to start the
+            # container with CreateContainerConfigError instead.
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: SCANNER_API_SERVER_ADDR
+              value: ":8080"
+            - name: SCANNER_LOG_LEVEL
+              value: info
+
+            # Redis: valkey is the Harbor release's own instance. DB 9 is unused
+            # by Harbor, which holds 0, 1, 2, 6 and 7.
+            - name: SCANNER_STORE_BACKEND
+              value: redis
+            - name: SCANNER_REDIS_URL
+              value: redis://valkey:6379/9
+
+            # In-cluster service rather than the public hostname: the public name
+            # resolves to this cluster's own ingress IP, so using it would
+            # hairpin out and back for every upload.
+            - name: SCANNER_DTRACK_URL
+              value: http://dependency-track-api-server.dependency-track.svc.cluster.local:8080
+            - name: SCANNER_DTRACK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dependencytrack-adapter
+                  key: apiKey
+
+            # Harbor's in-cluster registry is plain HTTP, which the adapter
+            # derives from the scan request's registry.url scheme. Nothing to
+            # configure here; noted because it is why no CA bundle is mounted.
+            - name: SCANNER_SYFT_TIMEOUT
+              value: 10m0s
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet: {path: /probe/healthy, port: http}
+            periodSeconds: 10
+          readinessProbe:
+            # Readiness covers Redis and, at startup, Dependency-Track. A failing
+            # readiness here is what keeps Harbor from dispatching scans that
+            # would be dropped.
+            httpGet: {path: /probe/ready, port: http}
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # Paired with SCANNER_SYFT_MAX_IMAGE_SIZE (1 GiB default) and
+              # worker concurrency 1. Raising either without raising this
+              # reintroduces the OOM the size cap exists to prevent.
+              memory: 4Gi
+          volumeMounts:
+            - name: work
+              mountPath: /home/scanner/work
+      volumes:
+        # Per-job scratch. Disk, not tmpfs: an SBOM for a large image is tens of
+        # MB and tmpfs would charge it against the same memory limit the scan is
+        # already competing for.
+        - name: work
+          emptyDir:
+            sizeLimit: 4Gi

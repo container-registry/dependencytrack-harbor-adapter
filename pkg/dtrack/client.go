@@ -43,6 +43,17 @@ const bomEndpoint = "/api/v1/bom"
 // message.
 const maxErrorBody = 4096
 
+// missingParentMarker identifies the one 404 that is recoverable.
+//
+// autoCreate creates the project being uploaded but NOT its parent, and
+// Dependency-Track rejects the whole upload when parentName names a project that
+// does not exist. Creating the parent needs PORTFOLIO_MANAGEMENT_CREATE, which is
+// more than an upload-only key should carry, so the recovery is to drop the
+// nesting rather than to widen the key. Verified against Dependency-Track 5.0.4:
+// PUT /api/v1/project with an upload-scoped key is 403, while the same upload
+// without parentName is 200.
+const missingParentMarker = "parent project could not be found"
+
 // UploadRequest is one BOM upload.
 type UploadRequest struct {
 	// ProjectName identifies the project in Dependency-Track. Projects are keyed
@@ -123,6 +134,31 @@ func NewClient(cfg Config) Client {
 }
 
 func (c *client) Upload(ctx context.Context, req UploadRequest) error {
+	token, err := c.submit(ctx, req)
+
+	// Retry unparented rather than lose the BOM. Nesting is presentation; the
+	// inventory is the point.
+	if err != nil && req.ParentName != "" && strings.Contains(err.Error(), missingParentMarker) {
+		slog.Warn("Dependency-Track has no such parent project; uploading unnested. "+
+			"Create it there, or set SCANNER_DTRACK_NEST_UNDER_HARBOR_PROJECT=false to stop trying.",
+			slog.String("parent", req.ParentName),
+			slog.String("project", req.ProjectName))
+		req.ParentName = ""
+		token, err = c.submit(ctx, req)
+	}
+	if err != nil {
+		return err
+	}
+
+	slog.Info("Uploaded BOM to Dependency-Track",
+		slog.String("project", req.ProjectName),
+		slog.String("version", req.ProjectVersion),
+		slog.String("token", token))
+	return nil
+}
+
+// submit is one PUT /api/v1/bom, returning the processing token.
+func (c *client) submit(ctx context.Context, req UploadRequest) (string, error) {
 	body, err := json.Marshal(bomSubmitRequest{
 		ProjectName:    req.ProjectName,
 		ProjectVersion: req.ProjectVersion,
@@ -133,29 +169,24 @@ func (c *client) Upload(ctx context.Context, req UploadRequest) error {
 		BOM:            base64.StdEncoding.EncodeToString(req.CycloneDX),
 	})
 	if err != nil {
-		return fmt.Errorf("marshaling BOM upload: %w", err)
+		return "", fmt.Errorf("marshaling BOM upload: %w", err)
 	}
 
 	resp, err := c.do(ctx, http.MethodPut, bomEndpoint, body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if err := checkStatus(resp); err != nil {
-		return err
+		return "", err
 	}
 
 	var parsed uploadResponse
 	// A missing or unparseable token is not a failure: the upload was accepted,
 	// and the token is only ever logged.
 	_ = json.NewDecoder(io.LimitReader(resp.Body, maxErrorBody)).Decode(&parsed)
-
-	slog.Info("Uploaded BOM to Dependency-Track",
-		slog.String("project", req.ProjectName),
-		slog.String("version", req.ProjectVersion),
-		slog.String("token", parsed.Token))
-	return nil
+	return parsed.Token, nil
 }
 
 func (c *client) Ping(ctx context.Context) error {

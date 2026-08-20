@@ -32,6 +32,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -125,7 +126,7 @@ func (f *fetcher) Fetch(ctx context.Context, target Target) (json.RawMessage, er
 		// A registry without referrers support answers 404 or 400 here. That is
 		// indistinguishable enough from "no accessory" for the caller's purposes:
 		// either way there is nothing to reuse.
-		slog.Debug("Referrers lookup failed; no accessory fast path",
+		slog.Warn("Referrers lookup failed; falling back to generating",
 			slog.String("image_ref", target.Ref), slog.String("err", err.Error()))
 		return nil, ErrNotFound
 	}
@@ -137,6 +138,18 @@ func (f *fetcher) Fetch(ctx context.Context, target Target) (json.RawMessage, er
 
 	desc := newestSBOM(manifest.Manifests)
 	if desc == nil {
+		// Log what the registry actually returned. "No accessory" and "the
+		// accessory is there but not shaped the way this code expects" look
+		// identical from the outside, and the second one silently costs a full
+		// image pull on every scan.
+		types := make([]string, 0, len(manifest.Manifests))
+		for _, m := range manifest.Manifests {
+			types = append(types, m.ArtifactType)
+		}
+		slog.Debug("Referrers returned no Harbor SBOM",
+			slog.String("image_ref", target.Ref),
+			slog.Int("referrer_count", len(manifest.Manifests)),
+			slog.String("artifact_types", strings.Join(types, ",")))
 		return nil, ErrNotFound
 	}
 

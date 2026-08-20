@@ -31,12 +31,33 @@ Harbor ──POST /api/v1/scan──▶ adapter
                                 └─3─ CycloneDX 1.6 ────▶ PUT /api/v1/bom (Dependency-Track)
 ```
 
-### The fast path
+### The fast path, and when it actually fires
 
 Harbor stores an SBOM it generated as an OCI *accessory*: a referrer of the image
 with artifact type `application/vnd.goharbor.harbor.sbom.v1`. When one exists,
-this adapter reuses it instead of pulling the image, which turns a multi-gigabyte
-pull into a referrers call and a ~40 KB blob GET.
+this adapter reuses it instead of pulling the image, which turns a
+multi-gigabyte pull into a referrers call and a ~40 KB blob GET.
+
+> [!IMPORTANT]
+> **On Harbor's own SBOM scan path, this never fires, and that is Harbor's
+> behaviour rather than a bug here.** Before dispatching an SBOM scan Harbor
+> deletes every existing SBOM accessory on the artifact
+> (`scanHandler.deleteSBOMAccessory`, `src/pkg/scan/sbom/sbom.go`), and only
+> pushes the new one once the scan returns. Measured on Harbor 2.16: the
+> accessory count for an artifact goes 1 → 0 within 3 seconds of triggering a
+> scan and back to 1 about 9 seconds later, which is exactly the window the
+> adapter runs in.
+>
+> So a deployment where Harbor drives every scan will show
+> `sbom_reused_total` at zero and `sbom_generated_total` climbing. That is
+> correct, not broken.
+
+The path is kept because it is cheap (one referrers call), correct, and does
+fire whenever the adapter is invoked outside Harbor's SBOM scan flow, which is
+the case for a rescan of an artifact whose accessory Harbor did not clear. If
+the goal is specifically to avoid image pulls by reusing Harbor's own SBOMs,
+a `SCANNING_COMPLETED` webhook consumer is the right shape: that event fires
+*after* the accessory is pushed, not before it is deleted.
 
 Two things about those accessories are not obvious and are load-bearing:
 
@@ -50,11 +71,8 @@ Two things about those accessories are not obvious and are load-bearing:
 Both were confirmed against Harbor 2.16 by pulling an accessory and comparing it
 byte for byte with the same document served from Harbor's REST API.
 
-The fast path is an optimization, so every failure in it is non-fatal: no
-accessory, no referrers support, an unreadable blob, a lookup timeout, all fall
-back to generating. Watch `sbom_reused_total` against `sbom_generated_total` to
-see whether it is firing. A reuse share near zero usually means the projects
-never had SBOM generation enabled.
+Every failure in the lookup is non-fatal: no accessory, no referrers support, an
+unreadable blob, a timeout, all fall back to generating.
 
 ### Why syft, and why CycloneDX 1.6
 
