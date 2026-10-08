@@ -2,8 +2,8 @@
 #
 # Multi-stage build for the Dependency-Track Harbor scanner adapter.
 #
-# The adapter binary, the lprobe healthcheck binary, and the syft CLI are all
-# staged on the host into bin/linux-<arch>/ by `task build`, `task build:lprobe`,
+# The adapter binary, the healthprobe healthcheck binary, and the syft CLI are all
+# staged on the host into bin/linux-<arch>/ by `task build`, `task build:healthprobe`,
 # and `task build:syft`, then COPY'd in. No Go build stage, so multi-arch needs no
 # Go-under-QEMU. syft comes from its checksum-verified public release tarball.
 #
@@ -33,7 +33,9 @@ COPY bin/linux-${TARGETARCH}/syft /usr/local/bin/syft
 COPY bin/linux-${TARGETARCH}/syft-LICENSE /licenses/syft-LICENSE
 
 # Healthcheck probe (distroless has no shell/curl) and the adapter binary.
-COPY bin/linux-${TARGETARCH}/lprobe /usr/local/bin/lprobe
+COPY bin/linux-${TARGETARCH}/healthprobe /usr/local/bin/healthprobe
+COPY bin/linux-${TARGETARCH}/healthprobe-LICENSE /licenses/healthprobe-LICENSE
+COPY bin/linux-${TARGETARCH}/healthprobe-NOTICE /licenses/healthprobe-NOTICE
 COPY bin/linux-${TARGETARCH}/scanner-dependencytrack /usr/local/bin/scanner-dependencytrack
 
 # Establish the per-job work-dir root owned by the nonroot uid. In production this
@@ -56,6 +58,6 @@ USER nonroot
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD ["/usr/local/bin/lprobe", "-mode=http", "-port=8080", "-endpoint=/probe/healthy"]
+  CMD ["/usr/local/bin/healthprobe", "-mode=http", "-port=8080", "-endpoint=/probe/healthy"]
 
 ENTRYPOINT ["/usr/local/bin/scanner-dependencytrack"]

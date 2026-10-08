@@ -8,13 +8,20 @@ license is included in the LICENSE file.
 Bundled third-party software
 --------------------------------------------------------------------------------
 
-This product's container image bundles the syft CLI binary, redistributed
-unmodified from its upstream release tarball:
+This product's container image bundles the following binaries, redistributed
+unmodified from their upstream releases:
 
   syft
   Copyright Anchore, Inc.
   Licensed under the Apache License, Version 2.0
   https://github.com/anchore/syft
 
-A copy of the syft license is shipped inside the container image at
-/licenses/syft-LICENSE, as required by the Apache-2.0 redistribution terms.
+  healthprobe (healthprobe-notls variant)
+  Copyright 2026 8gears AG
+  Licensed under the Apache License, Version 2.0
+  https://github.com/container-registry/healthprobe
+
+Copies of these licenses are shipped inside the container image at
+/licenses/syft-LICENSE and /licenses/healthprobe-LICENSE, and the healthprobe
+NOTICE at /licenses/healthprobe-NOTICE, as required by the Apache-2.0
+redistribution terms.

@@ -12,7 +12,7 @@
 #
 # The image is built out-of-band by run-e2e.sh (task image), NOT via a compose
 # build: the Dockerfile COPYs host-staged binaries out of bin/linux-<arch>/, which
-# `task image` populates via build / build:lprobe / build:syft.
+# `task image` populates via build / build:healthprobe / build:syft.
 services:
   dependencytrack-adapter:
     image: ${ADAPTER_IMAGE:-dependencytrack-harbor-adapter:e2e}

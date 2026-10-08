@@ -66,7 +66,7 @@ jobs:
           echo "VERSION=${version}" >> "$GITHUB_ENV"
 
       # No standalone `task build` here: `task image` below runs build (and
-      # lprobe/syft staging) itself with the same PLATFORMS/VERSION, and the
+      # healthprobe/syft staging) itself with the same PLATFORMS/VERSION, and the
       # Taskfile deliberately disables binary-build caching, so a separate step
       # compiled everything twice.
       - uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3  # v4.1.0
