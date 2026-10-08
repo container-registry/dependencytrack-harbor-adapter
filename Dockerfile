@@ -34,6 +34,8 @@ COPY bin/linux-${TARGETARCH}/syft-LICENSE /licenses/syft-LICENSE
 
 # Healthcheck probe (distroless has no shell/curl) and the adapter binary.
 COPY bin/linux-${TARGETARCH}/healthprobe /usr/local/bin/healthprobe
+COPY bin/linux-${TARGETARCH}/healthprobe-LICENSE /licenses/healthprobe-LICENSE
+COPY bin/linux-${TARGETARCH}/healthprobe-NOTICE /licenses/healthprobe-NOTICE
 COPY bin/linux-${TARGETARCH}/scanner-dependencytrack /usr/local/bin/scanner-dependencytrack
 
 # Establish the per-job work-dir root owned by the nonroot uid. In production this

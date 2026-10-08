@@ -106,6 +106,8 @@ tasks:
     # Fully determined by HEALTHPROBE_VERSION: a version stamp makes rebuilds no-ops.
     status:
       - test -x bin/{{.PLATFORM}}/healthprobe
+      - test -f bin/{{.PLATFORM}}/healthprobe-LICENSE
+      - test -f bin/{{.PLATFORM}}/healthprobe-NOTICE
       - test "$(cat bin/{{.PLATFORM}}/.healthprobe-version 2>/dev/null)" = "{{.HEALTHPROBE_VERSION}}"
     cmds:
       - cmd: mkdir -p bin/{{.PLATFORM}}
@@ -125,6 +127,11 @@ tasks:
           echo "${sha}  bin/{{.PLATFORM}}/healthprobe" | shasum -a 256 -c -
         fi
         chmod +x bin/{{.PLATFORM}}/healthprobe
+        # LICENSE and NOTICE travel with the binary: the image redistributes it
+        # (see NOTICE). Release assets do not carry them, so take them from the tag.
+        src="https://raw.githubusercontent.com/container-registry/healthprobe/{{.HEALTHPROBE_VERSION}}"
+        curl -sSfL "$src/LICENSE" -o bin/{{.PLATFORM}}/healthprobe-LICENSE
+        curl -sSfL "$src/NOTICE" -o bin/{{.PLATFORM}}/healthprobe-NOTICE
       - cmd: echo "{{.HEALTHPROBE_VERSION}}" > bin/{{.PLATFORM}}/.healthprobe-version
         silent: true
 
@@ -176,37 +183,46 @@ tasks:
     # Renovate bumps SYFT_CLI_VERSION but cannot recompute these digests, so
     # without this every bump PR leaves the pins pointing at the previous release
     # and every build:syft fails checksum verification.
-    silent: true
     cmds:
-      - |
-        set -eu
-        ver='{{.SYFT_CLI_VERSION}}'; bare="${ver#v}"
-        echo "syft ${ver}" >&2
-        sums=$(curl -sSfL "https://github.com/anchore/syft/releases/download/${ver}/syft_${bare}_checksums.txt")
-        for goarch in amd64 arm64; do
-          sum=$(echo "$sums" | awk -v f="syft_${bare}_linux_${goarch}.tar.gz" '$2 == f {print $1}')
-          [ -n "$sum" ] || { echo "no checksum for ${goarch}" >&2; exit 1; }
-          printf 'SYFT_CLI_SHA256_LINUX_%s=%s\n' "$(echo "$goarch" | tr '[:lower:]' '[:upper:]')" "$sum"
-        done
-        echo "" >&2
-        echo "Replace the SYFT_CLI_SHA256_* lines in versions.env with the above." >&2
+      - task: _release-checksums
+        vars:
+          NAME: syft
+          VERSION: '{{.SYFT_CLI_VERSION}}'
+          SUMS_URL: 'https://github.com/anchore/syft/releases/download/${ver}/syft_${bare}_checksums.txt'
+          ASSET: 'syft_${bare}_linux_${goarch}.tar.gz'
+          PREFIX: SYFT_CLI_SHA256_LINUX
 
   healthprobe:checksums:
     desc: "Recompute HEALTHPROBE_SHA256_* for the pinned HEALTHPROBE_VERSION"
+    cmds:
+      - task: _release-checksums
+        vars:
+          NAME: healthprobe
+          VERSION: '{{.HEALTHPROBE_VERSION}}'
+          SUMS_URL: 'https://github.com/container-registry/healthprobe/releases/download/${ver}/checksums.txt'
+          ASSET: './healthprobe-notls-linux-${goarch}'
+          PREFIX: HEALTHPROBE_SHA256_LINUX
+
+  # SUMS_URL and ASSET are expanded by the shell, so they may use ${ver},
+  # ${bare} (version without the leading "v") and ${goarch}.
+  _release-checksums:
+    internal: true
     silent: true
+    requires:
+      vars: [NAME, VERSION, SUMS_URL, ASSET, PREFIX]
     cmds:
       - |
         set -eu
-        ver='{{.HEALTHPROBE_VERSION}}'
-        echo "healthprobe ${ver}" >&2
-        sums=$(curl -sSfL "https://github.com/container-registry/healthprobe/releases/download/${ver}/checksums.txt")
+        ver='{{.VERSION}}'; bare="${ver#v}"
+        echo "{{.NAME}} ${ver}" >&2
+        sums=$(curl -sSfL "{{.SUMS_URL}}")
         for goarch in amd64 arm64; do
-          sum=$(echo "$sums" | awk -v f="./healthprobe-notls-linux-${goarch}" '$2 == f {print $1}')
+          sum=$(echo "$sums" | awk -v f="{{.ASSET}}" '$2 == f {print $1}')
           [ -n "$sum" ] || { echo "no checksum for ${goarch}" >&2; exit 1; }
-          printf 'HEALTHPROBE_SHA256_LINUX_%s=%s\n' "$(echo "$goarch" | tr '[:lower:]' '[:upper:]')" "$sum"
+          printf '{{.PREFIX}}_%s=%s\n' "$(echo "$goarch" | tr '[:lower:]' '[:upper:]')" "$sum"
         done
         echo "" >&2
-        echo "Replace the HEALTHPROBE_SHA256_* lines in versions.env with the above." >&2
+        echo "Replace the {{.PREFIX}}_* lines in versions.env with the above." >&2
 
   # ============================================================================
   # Lint & Vulnerability Checks
